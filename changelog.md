@@ -1,8 +1,11 @@
-# v1.0.0
-- Initial GD moderator send detector.
-- Detects successful RateStarsLayer uploads only.
-- Sends level/stars/feature/platformer metadata to the Discord bot bridge.
-- Supports per-user Discord ID and per-server connection key.
+# Changelog
 
-- Removed API URL from user settings; release builds embed it at compile time.
-- GitHub Actions reads the production endpoint from repository variable `SEND_API_URL`.
+## v1.1.0
+- Personal Connection Key per Discord moderator.
+- Removed Discord User ID from Geode settings and payload.
+- Added explicit `uploadActionFailed` diagnostics; failed GD sends are never published.
+- Added hook-registration diagnostics for both RateStarsLayer callbacks.
+- Kept cross-platform `$modify` hooks and Geode WebRequest API.
+
+## v1.0.0
+- Initial moderator send detection and Discord bridge integration.

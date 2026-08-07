@@ -13,7 +13,6 @@ Sent payload includes:
 - raw feature state
 - normalized send type
 - level name, creator and platformer flag when the level is available locally
-- the configured Discord User ID
 - a unique event ID
 
 If local level metadata is unavailable, the bot can fetch name/creator/platformer by Level ID.
@@ -24,7 +23,6 @@ Open the mod settings in Geode:
 
 - **Enabled** — turn reporting on/off
 - **Connection Key** — copy from Discord `/send-config` -> `Connection info`
-- **Discord User ID** — your own numeric Discord user ID
 - **Debug Logging** — logs detected raw values and bridge responses
 
 ## Built-in API address
@@ -43,7 +41,7 @@ For GitHub Actions builds, create a repository variable named `SEND_API_URL` wit
 https://send.example.com/api/v1/gd-send
 ```
 
-The workflow refuses to produce distributable builds when this variable is missing or not HTTPS.
+The workflow requires this variable to be set. For local same-PC testing it may be `http://127.0.0.1:8765/api/v1/gd-send`; for real remote use, use a public HTTPS endpoint.
 
 ## Send type mapping
 
@@ -69,3 +67,14 @@ cmake --build build
 ```
 
 The source was based on the HTTP pattern used by the supplied level-folder-logger project (`web::WebRequest`, JSON body, async POST).
+
+
+## v1.1 personal keys
+
+Each Discord moderator now gets a separate `/send-config` entry and a separate Connection Key.
+The Geode mod only needs that Connection Key; Discord User ID is no longer entered in Geode.
+The bot resolves both the guild and moderator account from the key and re-checks that the account
+still has the configured Discord Moderator role (or Administrator permission) before publishing.
+
+The hook uses Geode `$modify` on `RateStarsLayer::uploadActionFinished(int, int)`. The separate
+`uploadActionFailed(int, int)` callback is hooked for debug logging only and never publishes.

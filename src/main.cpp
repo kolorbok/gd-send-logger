@@ -105,14 +105,13 @@ static SendSnapshot captureSend(RateStarsLayer* layer) {
     return snapshot;
 }
 
-static matjson::Value buildPayload(SendSnapshot const& snapshot, std::string const& discordUserID) {
+static matjson::Value buildPayload(SendSnapshot const& snapshot) {
     auto body = matjson::Value();
     body["eventId"] = makeEventID(snapshot);
     body["levelId"] = snapshot.levelID;
     body["stars"] = snapshot.stars;
     body["featureState"] = snapshot.featureState;
     body["sendType"] = featureStateToSendType(snapshot.featureState);
-    body["discordUserId"] = discordUserID;
 
     if (!snapshot.levelName.empty()) {
         body["levelName"] = snapshot.levelName;
@@ -149,14 +148,13 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
     }
 
     auto connectionKey = trim(Mod::get()->getSettingValue<std::string>("connection-key"));
-    auto discordUserID = trim(Mod::get()->getSettingValue<std::string>("discord-user-id"));
 
-    if (connectionKey.empty() || discordUserID.empty()) {
-        log::warn("GD Send Logger is not configured. Fill Connection Key and Discord User ID in mod settings.");
+    if (connectionKey.empty()) {
+        log::warn("GD Send Logger is not configured. Fill your personal Connection Key in mod settings.");
         return;
     }
 
-    auto body = buildPayload(snapshot, discordUserID);
+    auto body = buildPayload(snapshot);
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + connectionKey);
@@ -199,16 +197,53 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
 } // namespace
 
 class $modify(GDSendLoggerRateStarsLayer, RateStarsLayer) {
-    void uploadActionFinished(int id, int response) {
-        // This callback is the success path from GD. Capture every value before the
-        // original implementation is allowed to close/release the popup.
+    static void onModify(auto& self) {
+        // Geode resolves these through its cross-platform bindings. If a future GD/Geode
+        // update removes either binding on one target, fail loudly in the Geode log.
+        if (!self.getHook("RateStarsLayer::uploadActionFinished")) {
+            log::error("GD Send Logger: failed to register RateStarsLayer::uploadActionFinished hook");
+        }
+        if (!self.getHook("RateStarsLayer::uploadActionFailed")) {
+            log::error("GD Send Logger: failed to register RateStarsLayer::uploadActionFailed hook");
+        }
+    }
+
+    void uploadActionFinished(int id, int response) override {
+        // RateStarsLayer implements UploadActionDelegate with distinct Finished/Failed
+        // callbacks. Only the Finished path publishes a moderator send. Capture fields
+        // before the original handler can mutate/close the popup.
         bool wasModerator = m_moderator;
         auto snapshot = captureSend(this);
+
+        if (debugLogging()) {
+            log::info(
+                "RateStarsLayer::uploadActionFinished id={}, response={}, moderator={}",
+                id,
+                response,
+                wasModerator
+            );
+        }
 
         if (wasModerator) {
             reportSuccessfulSend(snapshot);
         }
 
         RateStarsLayer::uploadActionFinished(id, response);
+    }
+
+    void uploadActionFailed(int id, int response) override {
+        // Never publish from the failure callback. Keeping this hook gives us a clear
+        // diagnostic on every supported platform when GD rejects the moderator action.
+        if (m_moderator && debugLogging()) {
+            log::warn(
+                "Moderator send failed in GD: id={}, response={}, levelID={}, stars={}, featureState={}",
+                id,
+                response,
+                m_levelID,
+                m_starsRate,
+                m_featureState
+            );
+        }
+        RateStarsLayer::uploadActionFailed(id, response);
     }
 };
