@@ -1,80 +1,13 @@
 # GD Send Logger
 
-Geode 5.6.1 / Geometry Dash 2.2081 mod that reports successful moderator sends to the Discord bot bridge added in the companion bot update.
+Private Geode mod for forwarding successful Geometry Dash moderator sends to the companion Discord bot.
 
-## What it detects
+Settings:
+- Enabled
+- Connection Key
+- Send Test Request
+- Debug Logging
 
-The mod hooks `RateStarsLayer::uploadActionFinished`, and only reports when the rate popup belongs to a moderator (`m_moderator`). That means it reports the successful upload callback, not a mere button click.
+`Send Test Request` sends a synthetic 6-star Featured payload through the exact same HTTP bridge code without requiring a Geometry Dash moderator send. It resets itself to off after triggering.
 
-Sent payload includes:
-
-- Level ID
-- stars (1-10; 10 is enough for Demon in the bot)
-- raw feature state
-- normalized send type
-- level name, creator and platformer flag when the level is available locally
-- a unique event ID
-
-If local level metadata is unavailable, the bot can fetch name/creator/platformer by Level ID.
-
-## Settings
-
-Open the mod settings in Geode:
-
-- **Enabled** — turn reporting on/off
-- **Connection Key** — copy from Discord `/send-config` -> `Connection info`
-- **Debug Logging** — logs detected raw values and bridge responses
-
-## Built-in API address
-
-The API URL is **not** a Geode setting anymore. It is compiled into the `.geode` file.
-
-For local builds the source fallback is:
-
-```text
-http://127.0.0.1:8765/api/v1/gd-send
-```
-
-For GitHub Actions builds, create a repository variable named `SEND_API_URL` with the production HTTPS endpoint, for example:
-
-```text
-https://send.example.com/api/v1/gd-send
-```
-
-The workflow requires this variable to be set. For local same-PC testing it may be `http://127.0.0.1:8765/api/v1/gd-send`; for real remote use, use a public HTTPS endpoint.
-
-## Send type mapping
-
-The current `RateStarsLayer::m_featureState` is sent raw and mapped as:
-
-- 0 -> Star Rate (Moon Rate if platformer)
-- 1 -> Featured
-- 2 -> Epic
-- 3 -> Legendary
-- 4 -> Mythic
-
-The raw value is also retained by the bot in `GeodeSendIngress` for debugging/migrations.
-
-## Build
-
-This is a normal Geode mod project. Set `GEODE_SDK` to a Geode SDK compatible with 5.6.1 and build with CMake as usual.
-
-Example:
-
-```bash
-cmake -B build -G Ninja
-cmake --build build
-```
-
-The source was based on the HTTP pattern used by the supplied level-folder-logger project (`web::WebRequest`, JSON body, async POST).
-
-
-## v1.1 personal keys
-
-Each Discord moderator now gets a separate `/send-config` entry and a separate Connection Key.
-The Geode mod only needs that Connection Key; Discord User ID is no longer entered in Geode.
-The bot resolves both the guild and moderator account from the key and re-checks that the account
-still has the configured Discord Moderator role (or Administrator permission) before publishing.
-
-The hook uses Geode `$modify` on `RateStarsLayer::uploadActionFinished(int, int)`. The separate
-`uploadActionFailed(int, int)` callback is hooked for debug logging only and never publishes.
+The API endpoint is compiled into the mod from the GitHub Actions repository variable `SEND_API_URL`.

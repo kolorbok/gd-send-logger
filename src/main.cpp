@@ -2,6 +2,7 @@
 #include <Geode/modify/RateStarsLayer.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
+#include <Geode/loader/SettingV3.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/async.hpp>
 #include "api_url.hpp"
@@ -55,11 +56,12 @@ static std::string featureStateToSendType(int featureState) {
     }
 }
 
-static std::string makeEventID(SendSnapshot const& snapshot) {
+static std::string makeEventID(SendSnapshot const& snapshot, bool isTest) {
     auto now = std::chrono::system_clock::now().time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-    return std::to_string(millis) + "-" + std::to_string(snapshot.levelID) + "-" +
-        std::to_string(snapshot.stars) + "-" + std::to_string(snapshot.featureState);
+    return std::string(isTest ? "test-" : "") + std::to_string(millis) + "-" +
+        std::to_string(snapshot.levelID) + "-" + std::to_string(snapshot.stars) + "-" +
+        std::to_string(snapshot.featureState);
 }
 
 static bool isRecentDuplicate(SendSnapshot const& snapshot) {
@@ -105,9 +107,9 @@ static SendSnapshot captureSend(RateStarsLayer* layer) {
     return snapshot;
 }
 
-static matjson::Value buildPayload(SendSnapshot const& snapshot) {
+static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest) {
     auto body = matjson::Value();
-    body["eventId"] = makeEventID(snapshot);
+    body["eventId"] = makeEventID(snapshot, isTest);
     body["levelId"] = snapshot.levelID;
     body["stars"] = snapshot.stars;
     body["featureState"] = snapshot.featureState;
@@ -125,14 +127,17 @@ static matjson::Value buildPayload(SendSnapshot const& snapshot) {
     return body;
 }
 
-static void reportSuccessfulSend(SendSnapshot snapshot) {
-    if (!Mod::get()->getSettingValue<bool>("enabled")) {
+static void reportSend(SendSnapshot snapshot, bool isTest = false) {
+    // A manual test is allowed even when normal detection is disabled so the bridge can
+    // be checked without risking an accidental real moderator-send report.
+    if (!isTest && !Mod::get()->getSettingValue<bool>("enabled")) {
         return;
     }
     if (snapshot.levelID <= 0 || snapshot.stars <= 0 || snapshot.stars > 10) {
-        if (debugLogging()) {
+        if (debugLogging() || isTest) {
             log::warn(
-                "Ignoring send with invalid values: levelID={}, stars={}, featureState={}",
+                "Ignoring {}send with invalid values: levelID={}, stars={}, featureState={}",
+                isTest ? "test " : "",
                 snapshot.levelID,
                 snapshot.stars,
                 snapshot.featureState
@@ -140,7 +145,7 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
         }
         return;
     }
-    if (isRecentDuplicate(snapshot)) {
+    if (!isTest && isRecentDuplicate(snapshot)) {
         if (debugLogging()) {
             log::info("Duplicate moderator send suppressed for level {}", snapshot.levelID);
         }
@@ -148,22 +153,22 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
     }
 
     auto connectionKey = trim(Mod::get()->getSettingValue<std::string>("connection-key"));
-
     if (connectionKey.empty()) {
-        log::warn("GD Send Logger is not configured. Fill your personal Connection Key in mod settings.");
+        log::warn("GD Send Logger is not configured. Fill Connection Key in mod settings.");
         return;
     }
 
-    auto body = buildPayload(snapshot);
+    auto body = buildPayload(snapshot, isTest);
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + connectionKey);
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
-    if (debugLogging()) {
+    if (debugLogging() || isTest) {
         log::info(
-            "Moderator send detected: levelID={}, name='{}', creator='{}', stars={}, featureState={}, sendType={}, platformer={}",
+            "{}send: levelID={}, name='{}', creator='{}', stars={}, featureState={}, sendType={}, platformer={}",
+            isTest ? "Test " : "Moderator ",
             snapshot.levelID,
             snapshot.levelName,
             snapshot.creator,
@@ -176,15 +181,21 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
 
     async::spawn(
         req.post(SEND_API_URL),
-        [snapshot](web::WebResponse res) {
+        [snapshot, isTest](web::WebResponse res) {
             auto responseText = res.string().unwrapOr("");
             if (res.ok()) {
-                if (debugLogging()) {
-                    log::info("Bot accepted send for level {}: {}", snapshot.levelID, responseText);
+                if (debugLogging() || isTest) {
+                    log::info(
+                        "Bot accepted {}send for level {}: {}",
+                        isTest ? "test " : "",
+                        snapshot.levelID,
+                        responseText
+                    );
                 }
             } else {
                 log::warn(
-                    "Bot bridge rejected send for level {} (HTTP {}): {}",
+                    "Bot bridge rejected {}send for level {} (HTTP {}): {}",
+                    isTest ? "test " : "",
                     snapshot.levelID,
                     res.code(),
                     responseText.empty() ? std::string("empty response") : responseText
@@ -194,12 +205,36 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
     );
 }
 
+static void sendTestRequest() {
+    SendSnapshot snapshot;
+    // Deliberately use a non-GD test ID and provide all metadata locally. This prevents
+    // the bot from needing a GD lookup and makes an "Only outside bot" collision extremely unlikely.
+    snapshot.levelID = 2147483001;
+    snapshot.stars = 6;
+    snapshot.featureState = 1;
+    snapshot.hasPlatformer = true;
+    snapshot.platformer = false;
+    snapshot.levelName = "GD Send Logger Test";
+    snapshot.creator = "Local Test";
+    reportSend(snapshot, true);
+}
+
 } // namespace
+
+$execute {
+    listenForSettingChanges<bool>("test-send", [](bool value) {
+        if (!value) {
+            return;
+        }
+        sendTestRequest();
+        // Make this act like a one-shot button: after the ON change triggers the test,
+        // reset it so the next tap can send another independent test request.
+        Mod::get()->setSettingValue<bool>("test-send", false);
+    });
+}
 
 class $modify(GDSendLoggerRateStarsLayer, RateStarsLayer) {
     static void onModify(auto& self) {
-        // Geode resolves these through its cross-platform bindings. If a future GD/Geode
-        // update removes either binding on one target, fail loudly in the Geode log.
         if (!self.getHook("RateStarsLayer::uploadActionFinished")) {
             log::error("GD Send Logger: failed to register RateStarsLayer::uploadActionFinished hook");
         }
@@ -209,9 +244,6 @@ class $modify(GDSendLoggerRateStarsLayer, RateStarsLayer) {
     }
 
     void uploadActionFinished(int id, int response) override {
-        // RateStarsLayer implements UploadActionDelegate with distinct Finished/Failed
-        // callbacks. Only the Finished path publishes a moderator send. Capture fields
-        // before the original handler can mutate/close the popup.
         bool wasModerator = m_moderator;
         auto snapshot = captureSend(this);
 
@@ -225,15 +257,13 @@ class $modify(GDSendLoggerRateStarsLayer, RateStarsLayer) {
         }
 
         if (wasModerator) {
-            reportSuccessfulSend(snapshot);
+            reportSend(snapshot, false);
         }
 
         RateStarsLayer::uploadActionFinished(id, response);
     }
 
     void uploadActionFailed(int id, int response) override {
-        // Never publish from the failure callback. Keeping this hook gives us a clear
-        // diagnostic on every supported platform when GD rejects the moderator action.
         if (m_moderator && debugLogging()) {
             log::warn(
                 "Moderator send failed in GD: id={}, response={}, levelID={}, stars={}, featureState={}",

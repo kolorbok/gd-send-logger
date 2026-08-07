@@ -8,27 +8,28 @@
   },
   "id": "kolorbok.gd-send-logger",
   "name": "GD Send Logger",
-  "version": "v1.1.0",
+  "version": "v1.1.1",
   "developer": "kolorbok",
-  "description": "Detects successful Geometry Dash moderator sends and reports them to the Discord bot using a personal moderator connection key.",
   "settings": {
     "enabled": {
       "type": "bool",
       "name": "Enabled",
-      "description": "Send successful moderator sends to the Discord bot bridge.",
       "default": true
     },
     "connection-key": {
       "type": "string",
       "name": "Connection Key",
-      "description": "Copy your personal alphanumeric key from /send-config -> Connection info.",
       "default": "",
       "filter": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    },
+    "test-send": {
+      "type": "bool",
+      "name": "Send Test Request",
+      "default": false
     },
     "debug-logging": {
       "type": "bool",
       "name": "Debug Logging",
-      "description": "Log raw send values and bot responses to the Geode log.",
       "default": false
     }
   }
