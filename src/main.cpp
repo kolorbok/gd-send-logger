@@ -5,6 +5,7 @@
 #include <Geode/loader/SettingV3.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/async.hpp>
+#include <Geode/binding/FLAlertLayer.hpp>
 #include "api_url.hpp"
 
 #include <chrono>
@@ -44,6 +45,23 @@ static std::string trim(std::string value) {
 
 static bool debugLogging() {
     return Mod::get()->getSettingValue<bool>("debug-logging");
+}
+
+static std::string limitPopupText(std::string value, std::size_t limit = 700) {
+    if (value.size() <= limit) {
+        return value;
+    }
+    value.resize(limit);
+    value += "...";
+    return value;
+}
+
+static void showTestPopup(std::string const& message) {
+    FLAlertLayer::create(
+        "GD Send Logger",
+        gd::string(limitPopupText(message).c_str()),
+        "OK"
+    )->show();
 }
 
 static std::string featureStateToSendType(int featureState) {
@@ -155,6 +173,9 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false) {
     auto connectionKey = trim(Mod::get()->getSettingValue<std::string>("connection-key"));
     if (connectionKey.empty()) {
         log::warn("GD Send Logger is not configured. Fill Connection Key in mod settings.");
+        if (isTest) {
+            showTestPopup("Test was not sent: Connection Key is empty.");
+        }
         return;
     }
 
@@ -192,6 +213,20 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false) {
                         responseText
                     );
                 }
+                if (isTest) {
+                    bool published =
+                        responseText.find("\"published\": true") != std::string::npos ||
+                        responseText.find("\"published\":true") != std::string::npos;
+                    if (published) {
+                        showTestPopup("Success: the cloud bot published the test send to Discord.");
+                    } else {
+                        showTestPopup(
+                            "Server accepted the request, but it was not published.\n\nHTTP " +
+                            std::to_string(res.code()) + "\n" +
+                            (responseText.empty() ? std::string("Empty response") : responseText)
+                        );
+                    }
+                }
             } else {
                 log::warn(
                     "Bot bridge rejected {}send for level {} (HTTP {}): {}",
@@ -200,6 +235,14 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false) {
                     res.code(),
                     responseText.empty() ? std::string("empty response") : responseText
                 );
+                if (isTest) {
+                    std::string details = responseText.empty()
+                        ? std::string("No response body. Check the embedded API URL, HTTPS, Caddy, and internet connection.")
+                        : responseText;
+                    showTestPopup(
+                        "Test failed.\n\nHTTP " + std::to_string(res.code()) + "\n" + details
+                    );
+                }
             }
         }
     );
