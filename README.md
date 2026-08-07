@@ -23,10 +23,27 @@ If local level metadata is unavailable, the bot can fetch name/creator/platforme
 Open the mod settings in Geode:
 
 - **Enabled** — turn reporting on/off
-- **Bot API URL** — copy from Discord `/send-config` -> `Connection info`
-- **Connection Key** — copy from the same screen
+- **Connection Key** — copy from Discord `/send-config` -> `Connection info`
 - **Discord User ID** — your own numeric Discord user ID
 - **Debug Logging** — logs detected raw values and bridge responses
+
+## Built-in API address
+
+The API URL is **not** a Geode setting anymore. It is compiled into the `.geode` file.
+
+For local builds the source fallback is:
+
+```text
+http://127.0.0.1:8765/api/v1/gd-send
+```
+
+For GitHub Actions builds, create a repository variable named `SEND_API_URL` with the production HTTPS endpoint, for example:
+
+```text
+https://send.example.com/api/v1/gd-send
+```
+
+The workflow refuses to produce distributable builds when this variable is missing or not HTTPS.
 
 ## Send type mapping
 

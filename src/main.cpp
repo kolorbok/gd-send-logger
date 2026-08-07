@@ -4,6 +4,7 @@
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/async.hpp>
+#include "api_url.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -147,12 +148,11 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
         return;
     }
 
-    auto apiURL = trim(Mod::get()->getSettingValue<std::string>("api-url"));
     auto connectionKey = trim(Mod::get()->getSettingValue<std::string>("connection-key"));
     auto discordUserID = trim(Mod::get()->getSettingValue<std::string>("discord-user-id"));
 
-    if (apiURL.empty() || connectionKey.empty() || discordUserID.empty()) {
-        log::warn("GD Send Logger is not configured. Fill Bot API URL, Connection Key and Discord User ID in mod settings.");
+    if (connectionKey.empty() || discordUserID.empty()) {
+        log::warn("GD Send Logger is not configured. Fill Connection Key and Discord User ID in mod settings.");
         return;
     }
 
@@ -177,7 +177,7 @@ static void reportSuccessfulSend(SendSnapshot snapshot) {
     }
 
     async::spawn(
-        req.post(apiURL),
+        req.post(SEND_API_URL),
         [snapshot](web::WebResponse res) {
             auto responseText = res.string().unwrapOr("");
             if (res.ok()) {

@@ -38,6 +38,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Embed bot API URL
+        shell: bash
+        env:
+          SEND_API_URL: ${{ vars.SEND_API_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          url = os.environ.get("SEND_API_URL", "").strip()
+          if not url:
+              raise SystemExit("Repository variable SEND_API_URL is missing. Set it to https://your-host/api/v1/gd-send")
+          if not url.startswith("https://"):
+              raise SystemExit("SEND_API_URL must use https:// for distributable builds")
+
+          Path("src/api_url.hpp").write_text(
+              '#pragma once\n\ninline constexpr char SEND_API_URL[] = "' + url.replace('\\', '\\\\').replace('"', '\\"') + '";\n',
+              encoding="utf-8",
+          )
+          print(f"Embedded API host: {url.split('/')[2]}")
+          PY
+
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         with:

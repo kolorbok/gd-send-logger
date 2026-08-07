@@ -10,7 +10,7 @@
   "name": "GD Send Logger",
   "version": "v1.0.0",
   "developer": "kolorbok",
-  "description": "Detects successful Geometry Dash moderator sends and reports them to the configured Discord bot bridge.",
+  "description": "Detects successful Geometry Dash moderator sends and reports them to the built-in Discord bot bridge endpoint.",
   "settings": {
     "enabled": {
       "type": "bool",
@@ -18,17 +18,12 @@
       "description": "Send successful moderator sends to the Discord bot bridge.",
       "default": true
     },
-    "api-url": {
-      "type": "string",
-      "name": "Bot API URL",
-      "description": "Copy the API URL shown by /send-config -> Connection info.",
-      "default": ""
-    },
     "connection-key": {
       "type": "string",
       "name": "Connection Key",
-      "description": "Copy the server connection key shown by /send-config -> Connection info.",
-      "default": ""
+      "description": "Copy the alphanumeric server connection key shown by /send-config -> Connection info.",
+      "default": "",
+      "filter": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     },
     "discord-user-id": {
       "type": "string",
