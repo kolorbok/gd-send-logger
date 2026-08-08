@@ -3,6 +3,7 @@
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/loader/SettingV3.hpp>
+#include <Geode/loader/Loader.hpp>
 #include <Geode/utils/web.hpp>
 #include <Geode/utils/async.hpp>
 #include <Geode/binding/FLAlertLayer.hpp>
@@ -123,6 +124,30 @@ static SendSnapshot captureSend(RateStarsLayer* layer) {
     }
 
     return snapshot;
+}
+
+
+static bool fakeGDModLoaded() {
+    return Loader::get()->isModLoaded("bitz.fakegdmod");
+}
+
+// FakeGDMod v1.0.x currently identifies its fake moderator send path by looking
+// at the first child layer of RateStarsLayer and intercepting onRate when that
+// child has exactly three children. Mirror that predicate safely so we only
+// report when FakeGDMod itself is going to simulate "Rating submitted!".
+static bool fakeGDModWillSimulateSend(RateStarsLayer* layer) {
+    if (!layer || !fakeGDModLoaded()) {
+        return false;
+    }
+
+    auto* children = layer->getChildren();
+    if (!children || children->count() < 1) {
+        return false;
+    }
+
+    auto* firstChild = children->objectAtIndex(0);
+    auto* innerLayer = dynamic_cast<cocos2d::CCLayer*>(firstChild);
+    return innerLayer && innerLayer->getChildrenCount() == 3;
 }
 
 static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest) {
@@ -278,11 +303,64 @@ $execute {
 
 class $modify(GDSendLoggerRateStarsLayer, RateStarsLayer) {
     static void onModify(auto& self) {
+        if (!self.getHook("RateStarsLayer::onRate")) {
+            log::error("GD Send Logger: failed to register RateStarsLayer::onRate hook");
+        }
         if (!self.getHook("RateStarsLayer::uploadActionFinished")) {
             log::error("GD Send Logger: failed to register RateStarsLayer::uploadActionFinished hook");
         }
         if (!self.getHook("RateStarsLayer::uploadActionFailed")) {
             log::error("GD Send Logger: failed to register RateStarsLayer::uploadActionFailed hook");
+        }
+
+        // FakeGDMod's fake-send branch does not call the original onRate at all.
+        // Therefore our hook must be earlier in the chain or FakeGDMod would swallow
+        // the call before GD Send Logger ever sees it. Geode's relative hook priority
+        // gives deterministic ordering when FakeGDMod is installed.
+        if (Loader::get()->isModInstalled("bitz.fakegdmod")) {
+            auto priorityResult = self.setHookPriorityBeforePre(
+                "RateStarsLayer::onRate",
+                "bitz.fakegdmod"
+            );
+            if (!priorityResult) {
+                log::error(
+                    "GD Send Logger: FakeGDMod detected, but failed to order RateStarsLayer::onRate before it"
+                );
+            } else {
+                log::info("GD Send Logger: FakeGDMod compatibility armed");
+            }
+        }
+    }
+
+    void onRate(CCObject* sender) {
+        // Capture BEFORE calling the next hook. FakeGDMod may consume the call and
+        // never invoke Geometry Dash's original onRate.
+        bool fakeSend = fakeGDModWillSimulateSend(this);
+        SendSnapshot fakeSnapshot;
+        if (fakeSend) {
+            fakeSnapshot = captureSend(this);
+            if (debugLogging()) {
+                log::info(
+                    "FakeGDMod send button captured: levelID={}, stars={}, featureState={}",
+                    fakeSnapshot.levelID,
+                    fakeSnapshot.stars,
+                    fakeSnapshot.featureState
+                );
+            }
+        }
+
+        // Continue the hook chain. With current FakeGDMod this displays its fake
+        // upload popup / "Rating submitted!" message instead of contacting GD.
+        RateStarsLayer::onRate(sender);
+
+        // Only publish when the exact FakeGDMod fake-send path was active. If its
+        // onRate passed through to real GD, uploadActionFinished remains the source
+        // of truth and this branch does nothing.
+        if (fakeSend) {
+            if (debugLogging()) {
+                log::info("FakeGDMod simulated send completed; forwarding snapshot to bot bridge");
+            }
+            reportSend(fakeSnapshot, false);
         }
     }
 
