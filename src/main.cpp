@@ -90,6 +90,7 @@ static std::vector<RequestMeta> g_requestList;
 static RequestMeta g_selectedRequest;
 static bool g_hasSelectedRequest = false;
 static std::unordered_map<int, std::string> g_feedbackDrafts;
+static std::unordered_map<int, bool> g_noPingDrafts;
 static bool g_nextBrowserIsRequests = false;
 static bool g_requestBrowserActive = false;
 static LevelBrowserLayer* g_requestBrowser = nullptr;
@@ -255,6 +256,17 @@ static std::string feedbackFor(RequestContext const& context) {
     return it == g_feedbackDrafts.end() ? std::string() : it->second;
 }
 
+static bool noPingFor(RequestContext const& context) {
+    if (!context.active || context.request.requestID <= 0) return false;
+    auto it = g_noPingDrafts.find(context.request.requestID);
+    return it != g_noPingDrafts.end() && it->second;
+}
+
+static void setNoPingFor(RequestContext const& context, bool value) {
+    if (!context.active || context.request.requestID <= 0) return;
+    g_noPingDrafts[context.request.requestID] = value;
+}
+
 static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, RequestContext const* context = nullptr) {
     auto body = matjson::Value();
     body["eventId"] = makeEventID(snapshot, isTest);
@@ -273,6 +285,7 @@ static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, Re
         body["requestEvent"] = context->request.event;
         auto feedback = feedbackFor(*context);
         if (!feedback.empty()) body["feedback"] = feedback.substr(0, FEEDBACK_LIMIT);
+        body["noPing"] = noPingFor(*context);
     }
     return body;
 }
@@ -312,7 +325,10 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
             if (debugLogging() || isTest) {
                 log::info("Bot accepted {}send for level {}: {}", isTest ? "test " : "", snapshot.levelID, responseText);
             }
-            if (requestID > 0) g_feedbackDrafts.erase(requestID);
+            if (requestID > 0) {
+                g_feedbackDrafts.erase(requestID);
+                g_noPingDrafts.erase(requestID);
+            }
             if (isTest) {
                 bool published = responseText.find("\"published\": true") != std::string::npos ||
                     responseText.find("\"published\":true") != std::string::npos;
@@ -355,7 +371,7 @@ static std::string requestURL() {
         "&minSend=" + g_filters.minSend +
         "&rated=all" +
         "&sort=newest" +
-        "&limit=10000";
+        "&limit=50000";
 }
 
 static bool requestMetaMatchesLocalFilters(RequestMeta const& meta) {
@@ -487,20 +503,21 @@ static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
 // visible popup gives the user immediate Loading / Connected / Error feedback and avoids
 // capturing a LevelSearchLayer pointer across an asynchronous request.
 
-class FeedbackPopup final : public geode::Popup, public TextInputDelegate {
+class FeedbackPopup final : public geode::Popup {
 protected:
     RequestContext m_context;
-    CCTextInputNode* m_input = nullptr;
+    geode::TextInput* m_input = nullptr;
     TextArea* m_textArea = nullptr;
     CCLabelBMFont* m_counter = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
+    CCMenuItemSpriteExtra* m_focusTarget = nullptr;
     std::string m_value;
 
-    void refreshCounterAndPlaceholder() {
+    void refreshText() {
         if (m_input) m_value = gdToStd(m_input->getString());
         if (m_value.size() > FEEDBACK_LIMIT) {
             m_value.resize(FEEDBACK_LIMIT);
-            if (m_input) m_input->setString(gd::string(m_value.c_str()));
+            if (m_input) m_input->setString(gd::string(m_value.c_str()), false);
         }
         if (m_counter) {
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
@@ -510,78 +527,103 @@ protected:
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
     }
 
-    void textChanged(CCTextInputNode* node) override {
-        if (node != m_input) return;
-        refreshCounterAndPlaceholder();
+    void focusInput() {
+        if (!m_input) return;
+        // Use Geode's public focus() path instead of manually attaching the inner
+        // CCTextFieldTTF. The wrapper keeps CCTextInputNode's selected/IME state in sync
+        // across desktop and mobile, while the attached TextArea handles visual wrapping.
+        m_input->focus();
     }
 
     bool initFor(RequestContext const& context) {
         m_context = context;
         m_value = feedbackFor(context);
-        if (!Popup::init(340.f, 210.f)) return false;
+        if (!Popup::init(340.f, 205.f)) return false;
         setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
 
-        auto* box = CCLayerColor::create(ccc4(110, 61, 34, 255), 246.f, 88.f);
+        constexpr float fieldW = 250.f;
+        constexpr float fieldH = 94.f;
+        constexpr float popupW = 340.f;
+        constexpr float fieldX = (popupW - fieldW) / 2.f;
+        constexpr float fieldY = 66.f;
+        constexpr float fieldCenterX = popupW / 2.f;
+
+        auto* box = CCLayerColor::create(ccc4(110, 61, 34, 255), fieldW, fieldH);
         box->setOpacity(165);
-        box->setPosition({47.f, 91.f});
-        m_mainLayer->addChild(box);
+        box->setPosition({fieldX, fieldY});
+        m_mainLayer->addChild(box, 1);
 
         m_textArea = TextArea::create(
             gd::string(m_value.c_str()),
             "chatFont.fnt",
             .58f,
-            226.f,
+            fieldW - 20.f,
             {0.f, 1.f},
             18.f,
             true
         );
         if (!m_textArea) return false;
-        m_textArea->setPosition({57.f, 168.f});
+        m_textArea->setPosition({fieldX + 10.f, fieldY + fieldH - 10.f});
         m_mainLayer->addChild(m_textArea, 2);
 
-        // CCTextInputNode has native TextArea support. Using it is the important part here:
-        // the IME/cursor and the visible text now share the same wrapped text area instead of
-        // a hidden one-line Geode TextInput whose cursor could run across the whole popup.
-        m_input = CCTextInputNode::create(246.f, 88.f, "", "chatFont.fnt");
+        // Geode TextInput provides a reliable public focus() API. Keep its own renderer
+        // invisible and attach our TextArea to the underlying CCTextInputNode: GD then
+        // forwards typed text into the wrapped multiline renderer instead of drawing a
+        // one-line cursor across the popup.
+        m_input = geode::TextInput::create(fieldW, "", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({170.f, 135.f});
-        m_input->setContentSize({246.f, 88.f});
-        m_input->setDelegate(this);
-        m_input->setAllowedChars(gd::string(geode::getCommonFilterAllowedChars(geode::CommonFilter::Any)));
-        m_input->setMaxLabelLength(static_cast<int>(FEEDBACK_LIMIT));
-        m_input->setMaxLabelWidth(226.f);
-        m_input->addTextArea(m_textArea);
-        m_input->setString(gd::string(m_value.c_str()));
-        if (auto* label = m_input->getTextLabel()) label->setVisible(false);
+        m_input->setPosition({fieldCenterX, fieldY + fieldH / 2.f});
+        m_input->setContentSize({fieldW, fieldH});
+        m_input->hideBG();
+        m_input->setTextAlign(geode::TextInputAlign::Left);
+        m_input->setCommonFilter(geode::CommonFilter::Any);
+        m_input->setMaxCharCount(FEEDBACK_LIMIT);
+        m_input->setString(gd::string(m_value.c_str()), false);
+        m_input->setCallback([this](std::string const&) { this->refreshText(); });
+        if (auto* node = m_input->getInputNode()) {
+            node->setMaxLabelWidth(fieldW - 20.f);
+            node->addTextArea(m_textArea);
+            if (auto* label = node->getTextLabel()) label->setVisible(false);
+            if (node->m_cursor) node->m_cursor->setVisible(false);
+        }
         m_mainLayer->addChild(m_input, 3);
 
         m_placeholder = CCLabelBMFont::create("WRITE FEEDBACK...", "chatFont.fnt");
         m_placeholder->setScale(.48f);
         m_placeholder->setOpacity(145);
         m_placeholder->setAnchorPoint({0.f, .5f});
-        m_placeholder->setPosition({58.f, 163.f});
+        m_placeholder->setPosition({fieldX + 10.f, fieldY + fieldH - 17.f});
         m_mainLayer->addChild(m_placeholder, 4);
+
+        // Transparent menu item covering the full box. This is what makes every point of
+        // the multiline-looking field focus the native IME reliably on desktop/mobile.
+        auto* focusNode = CCLayerColor::create(ccc4(0, 0, 0, 0), fieldW, fieldH);
+        m_focusTarget = CCMenuItemSpriteExtra::create(focusNode, this, menu_selector(FeedbackPopup::onFocus));
+        m_focusTarget->setPosition({fieldCenterX, fieldY + fieldH / 2.f});
+        m_focusTarget->setSizeMult(1.f);
+        m_buttonMenu->addChild(m_focusTarget, 20);
 
         m_counter = CCLabelBMFont::create("0/1500", "goldFont.fnt");
         m_counter->setScale(.27f);
         m_counter->setAnchorPoint({1.f, .5f});
-        m_counter->setPosition({307.f, 49.f});
+        m_counter->setPosition({300.f, 58.f});
         m_mainLayer->addChild(m_counter);
 
         auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .58f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(FeedbackPopup::onCancel));
-        cancelBtn->setPosition({118.f, 27.f});
+        cancelBtn->setPosition({118.f, 25.f});
         m_buttonMenu->addChild(cancelBtn);
 
         auto* saveSpr = ButtonSprite::create("SAVE", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .58f);
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(FeedbackPopup::onSave));
-        saveBtn->setPosition({222.f, 27.f});
+        saveBtn->setPosition({222.f, 25.f});
         m_buttonMenu->addChild(saveBtn);
 
-        refreshCounterAndPlaceholder();
+        refreshText();
         return true;
     }
 
+    void onFocus(CCObject*) { focusInput(); }
     void onCancel(CCObject*) { onClose(nullptr); }
 
     void onSave(CCObject*) {
@@ -589,7 +631,7 @@ protected:
             onClose(nullptr);
             return;
         }
-        refreshCounterAndPlaceholder();
+        refreshText();
         g_feedbackDrafts[m_context.request.requestID] = m_value;
         onClose(nullptr);
     }
@@ -615,7 +657,13 @@ static bool replaceFirstLabelContaining(CCNode* root, std::string const& needle,
     if (!root) return false;
     if (auto* label = typeinfo_cast<CCLabelBMFont*>(root)) {
         auto text = std::string(label->getString());
-        if (text.find(needle) != std::string::npos) {
+        auto haystack = text;
+        auto search = needle;
+        std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        std::transform(search.begin(), search.end(), search.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (haystack.find(search) != std::string::npos) {
+            // Repeated late refreshes must not keep shrinking an already-correct helper title.
+            if (text == replacement) return true;
             label->setString(replacement.c_str());
             // HELPER is wider than MOD; keep the vanilla title centered and inside the popup.
             label->setScale(label->getScale() * .84f);
@@ -730,7 +778,16 @@ protected:
         m_buttonMenu->addChild(rightBtn);
     }
 
+    void normalizeDependentFilters() {
+        // A request cannot be both "Not checked"/"Rejected" by me and simultaneously
+        // have one of my sent tiers. Keep that impossible combination out of the UI.
+        if (m_working.status == "unchecked" || m_working.status == "rejected") {
+            m_working.minSend = "any";
+        }
+    }
+
     void refresh() {
+        normalizeDependentFilters();
         if (m_difficulty) m_difficulty->setString(prettyDifficulty(m_working.difficulty).c_str());
         if (m_type) m_type->setString(prettyType(m_working.levelType).c_str());
         if (m_status) m_status->setString(prettyStatus(m_working.status).c_str());
@@ -786,8 +843,14 @@ protected:
     void typeNext(CCObject*) { cycleValue(m_working.levelType, LEVEL_TYPES, 1); refresh(); }
     void statusPrev(CCObject*) { cycleValue(m_working.status, STATUSES, -1); refresh(); }
     void statusNext(CCObject*) { cycleValue(m_working.status, STATUSES, 1); refresh(); }
-    void sendPrev(CCObject*) { cycleValue(m_working.minSend, MIN_SENDS, -1); refresh(); }
-    void sendNext(CCObject*) { cycleValue(m_working.minSend, MIN_SENDS, 1); refresh(); }
+    void sendPrev(CCObject*) {
+        if (m_working.status == "unchecked" || m_working.status == "rejected") { m_working.minSend = "any"; refresh(); return; }
+        cycleValue(m_working.minSend, MIN_SENDS, -1); refresh();
+    }
+    void sendNext(CCObject*) {
+        if (m_working.status == "unchecked" || m_working.status == "rejected") { m_working.minSend = "any"; refresh(); return; }
+        cycleValue(m_working.minSend, MIN_SENDS, 1); refresh();
+    }
     void ratedPrev(CCObject*) { cycleValue(m_working.rated, RATED, -1); refresh(); }
     void ratedNext(CCObject*) { cycleValue(m_working.rated, RATED, 1); refresh(); }
     void sortPrev(CCObject*) { cycleValue(m_working.sort, SORTS, -1); refresh(); }
@@ -828,6 +891,7 @@ static void postRequestAction(RequestContext context, std::string action, std::s
     body["action"] = action;
     auto feedback = feedbackFor(context);
     if (!feedback.empty()) body["feedback"] = feedback.substr(0, FEEDBACK_LIMIT);
+    body["noPing"] = noPingFor(context);
 
     if (action == "send") {
         body["stars"] = snapshot.stars;
@@ -849,6 +913,7 @@ static void postRequestAction(RequestContext context, std::string action, std::s
         auto text = res.string().unwrapOr("");
         if (res.ok()) {
             g_feedbackDrafts.erase(requestID);
+            g_noPingDrafts.erase(requestID);
             showAlert(MOD_NAME, action == "send" ? "Request send result submitted." : "Request rejection submitted.");
         } else {
             showAlert(MOD_NAME, "Could not submit the request result.\n\nHTTP " + std::to_string(res.code()) + "\n" +
@@ -869,6 +934,8 @@ protected:
     std::string m_reason;
     std::vector<ReasonChoice> m_reasonButtons;
     CCMenuItemSpriteExtra* m_submitButton = nullptr;
+    CCMenuItemToggler* m_noPingToggle = nullptr;
+    CCLabelBMFont* m_noPingLabel = nullptr;
 
     static ButtonSprite* makeReasonSprite(std::string const& label, bool selected) {
         return ButtonSprite::create(
@@ -879,6 +946,21 @@ protected:
             selected ? "GJ_button_01.png" : "GJ_button_04.png",
             28.f,
             .52f
+        );
+    }
+
+    static ButtonSprite* makeBottomSprite(char const* label) {
+        // Match the RateStars-style action buttons: green GJ background + gold font,
+        // with a fixed action-button footprint. Disabled appearance is handled by the
+        // menu item itself, just like the vanilla Submit button.
+        return ButtonSprite::create(
+            label,
+            104,
+            true,
+            "goldFont.fnt",
+            "GJ_button_01.png",
+            32.f,
+            .84f
         );
     }
 
@@ -893,20 +975,14 @@ protected:
 
         if (m_submitButton) {
             bool enabled = !m_reason.empty();
-            auto* sprite = ButtonSprite::create(
-                "SUBMIT",
-                86,
-                true,
-                "goldFont.fnt",
-                "GJ_button_01.png",
-                30.f,
-                .68f
-            );
-            if (!enabled) sprite->setColor(ccc3(120, 120, 120));
-            m_submitButton->setSprite(sprite);
+            if (auto* sprite = makeBottomSprite("SUBMIT")) {
+                m_submitButton->setSprite(sprite);
+            }
             m_submitButton->setEnabled(enabled);
             m_submitButton->setSizeMult(1.f);
         }
+
+        if (m_noPingToggle) m_noPingToggle->toggle(noPingFor(m_context));
     }
 
     CCMenuItemSpriteExtra* reasonButton(char const* label, std::string reason, CCPoint pos) {
@@ -922,26 +998,47 @@ protected:
         return btn;
     }
 
+    void addNoPingControl(CCPoint position) {
+        m_noPingToggle = CCMenuItemToggler::createWithStandardSprites(
+            this,
+            menu_selector(RejectPopup::onNoPing),
+            .48f
+        );
+        if (!m_noPingToggle) return;
+        m_noPingToggle->setPosition(position);
+        m_noPingToggle->setSizeMult(1.f);
+        m_noPingToggle->toggle(noPingFor(m_context));
+        m_buttonMenu->addChild(m_noPingToggle);
+
+        m_noPingLabel = CCLabelBMFont::create("NO PING", "goldFont.fnt");
+        m_noPingLabel->setScale(.28f);
+        m_noPingLabel->setAnchorPoint({0.f, .5f});
+        m_noPingLabel->setPosition({position.x + 15.f, position.y});
+        m_buttonMenu->addChild(m_noPingLabel);
+    }
+
     bool initFor(RequestContext const& context) {
         m_context = context;
         if (!Popup::init(400.f, 190.f)) return false;
 
-        char const* title = context.mode == "helper" ? "HELPER: REJECTION REASON" : "MOD: REJECTION REASON";
-        setTitle(title, "bigFont.fnt", context.mode == "helper" ? .58f : .68f, 20.f);
+        char const* title = context.mode == "helper" ? "HELPER: REJECT REASON" : "MOD: REJECT REASON";
+        setTitle(title, "bigFont.fnt", context.mode == "helper" ? .72f : .80f, 20.f);
 
         reasonButton("NOT SENT", "not_sent", {112.f, 118.f});
         reasonButton("ALREADY SEEN", "already_seen", {288.f, 118.f});
         reasonButton("ALREADY RATED", "already_rated", {112.f, 78.f});
         reasonButton("REPORT", "report", {288.f, 78.f});
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 86, true, "goldFont.fnt", "GJ_button_01.png", 30.f, .68f);
+        auto* cancelSpr = makeBottomSprite("CANCEL");
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(RejectPopup::onCancel));
         cancelBtn->setPosition({138.f, 30.f});
+        cancelBtn->setSizeMult(1.f);
         m_buttonMenu->addChild(cancelBtn);
 
-        auto* submitSpr = ButtonSprite::create("SUBMIT", 86, true, "goldFont.fnt", "GJ_button_01.png", 30.f, .68f);
+        auto* submitSpr = makeBottomSprite("SUBMIT");
         m_submitButton = CCMenuItemSpriteExtra::create(submitSpr, this, menu_selector(RejectPopup::onSubmit));
         m_submitButton->setPosition({262.f, 30.f});
+        m_submitButton->setSizeMult(1.f);
         m_buttonMenu->addChild(m_submitButton);
 
         auto* feedbackSpr = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
@@ -951,6 +1048,9 @@ protected:
         feedbackBtn->setSizeMult(1.f);
         feedbackBtn->setPosition({cancelBtn->getPositionX() - 78.f, cancelBtn->getPositionY()});
         m_buttonMenu->addChild(feedbackBtn);
+
+        // Mirror the feedback control on the right side with GD's standard checkbox.
+        addNoPingControl({m_submitButton->getPositionX() + 78.f, m_submitButton->getPositionY()});
 
         updateButtons();
         return true;
@@ -963,6 +1063,12 @@ protected:
         if (!value) return;
         m_reason = value->getCString();
         updateButtons();
+    }
+
+    void onNoPing(CCObject*) {
+        bool next = !noPingFor(m_context);
+        setNoPingFor(m_context, next);
+        if (m_noPingToggle) m_noPingToggle->toggle(next);
     }
 
     void onFeedback(CCObject*) { openFeedbackEditor(m_context); }
@@ -1030,17 +1136,30 @@ protected:
 
     void applyLoadedState() {
         auto foundCount = static_cast<int>(requestLevelIDs().size());
-        auto meta = "CONNECTED  |  " + modeLabel() + "  |  " +
-            std::to_string(foundCount) + " FOUND";
+        bool definitelyCapped = g_client.total > g_client.returned && g_client.returned > 0;
+        bool likelyHundredCap = g_client.returned >= 100 && g_client.total <= g_client.returned;
+
+        auto meta = "CONNECTED  |  " + modeLabel() + "  |  " + std::to_string(foundCount) + " SHOWN";
         setStatus(meta);
         if (m_metaLabel) {
-            auto ids = "SERVER " + shortID(g_client.serverID) + "  -  USER " + shortID(g_client.userID);
-            m_metaLabel->setString(ids.c_str());
+            std::string info;
+            if (definitelyCapped) {
+                info = "SERVER LIMIT: " + std::to_string(g_client.returned) + " / " + std::to_string(g_client.total) + " MATCHES RETURNED";
+            } else if (likelyHundredCap) {
+                info = "ONLY 100 LOADED - SERVER MAY BE CAPPING THE RESPONSE";
+            } else {
+                info = "SERVER " + shortID(g_client.serverID) + "  -  USER " + shortID(g_client.userID);
+            }
+            m_metaLabel->setString(info.c_str());
         }
         refreshButtons();
 
         if (g_requestList.empty()) {
-            setStatus("No requests match these filters");
+            if (g_filters.status == "unchecked") {
+                setStatus("0 shown for NOT CHECKED - server filter returned no rows");
+            } else {
+                setStatus("No requests match these filters");
+            }
         }
     }
 
@@ -1324,7 +1443,15 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
                 auto title = "Request #" + std::to_string(g_selectedRequest.requestID);
                 return gd::string(title.c_str());
             }
-            return "Server Requests";
+            auto title = std::string("Server Requests");
+            auto batches = requestNativeBatchCount();
+            if (batches > 1) {
+                title += " " + std::to_string(g_requestNativeBatch + 1) + "/" + std::to_string(batches);
+            }
+            if (g_client.total > g_client.returned && g_client.returned > 0) {
+                title += " (limited)";
+            }
+            return gd::string(title.c_str());
         }
         return LevelBrowserLayer::getSearchTitle();
     }
@@ -1406,7 +1533,15 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
         g_creatingHelperPopup = true;
         auto* popup = RateStarsLayer::create(m_level->m_levelID, m_level->isPlatformer(), true);
         g_creatingHelperPopup = false;
-        if (popup) popup->show();
+        if (popup) {
+            // Do not rely only on the hook-time context: rewrite the freshly-created layer
+            // before it is shown as well. This makes the helper title deterministic even if
+            // another mod mutates the vanilla MOD title during construction.
+            if (!replaceFirstLabelContaining(popup, "MOD: SUGGEST STARS", "HELPER: SUGGEST STARS")) {
+                replaceFirstLabelContaining(popup, "SUGGEST STARS", "HELPER: SUGGEST STARS");
+            }
+            popup->show();
+        }
     }
 
     void onRejectRequest(CCObject*) {
@@ -1421,6 +1556,8 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         bool helperRequestPopup = false;
         RequestContext requestContext;
         CCMenuItemSpriteExtra* feedbackButton = nullptr;
+        CCMenuItemToggler* noPingToggle = nullptr;
+        CCLabelBMFont* noPingLabel = nullptr;
     };
 
     static void onModify(auto& self) {
@@ -1437,62 +1574,117 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
 
     void refreshHelperRequestTitle() {
         if (!m_fields->helperRequestPopup) return;
-        replaceFirstLabelContaining(this, "SUGGEST STARS", "HELPER: SUGGEST STARS");
+        if (!replaceFirstLabelContaining(this, "MOD: SUGGEST STARS", "HELPER: SUGGEST STARS")) {
+            replaceFirstLabelContaining(this, "SUGGEST STARS", "HELPER: SUGGEST STARS");
+        }
+    }
+
+    void enforceHelperRequestTitle(float) {
+        // Keep enforcing while this helper-only popup exists. The vanilla layer (or another
+        // rate-related mod) may rewrite the title after init/show, which made the old two
+        // queued refreshes lose the race and leave MOD: visible again.
+        refreshHelperRequestTitle();
     }
 
     bool init(int levelID, bool platformer, bool moderator) {
         bool helperPopup = g_creatingHelperPopup;
         RequestContext captured;
-        if (g_context.active && g_context.request.levelID == levelID &&
+        // g_creatingHelperPopup is the strongest signal: it is set immediately around the
+        // helper-created RateStarsLayer::create call. Keep it in the decision instead of
+        // calculating it and then accidentally discarding it.
+        if (helperPopup && g_context.active && g_context.request.levelID == levelID) {
+            captured = g_context;
+            captured.mode = "helper";
+        } else if (g_context.active && g_context.request.levelID == levelID &&
             (g_context.mode == "helper" || g_context.mode == "moderator")) {
             captured = g_context;
         }
 
         if (!RateStarsLayer::init(levelID, platformer, moderator)) return false;
-        m_fields->helperRequestPopup = captured.active && captured.mode == "helper";
+        m_fields->helperRequestPopup = helperPopup || (captured.active && captured.mode == "helper");
+        if (m_fields->helperRequestPopup && captured.active) captured.mode = "helper";
         m_fields->requestContext = captured;
 
-        if (captured.active && captured.mode == "helper") {
+        if (m_fields->helperRequestPopup) {
             refreshHelperRequestTitle();
-            // Some UI/fake-mod code can touch the vanilla title after init. Re-apply on two
-            // following main-thread turns so HELPER wins after those late mutations as well.
-            this->retain();
-            geode::queueInMainThread([self = this]() {
-                if (self->getParent()) self->refreshHelperRequestTitle();
-                geode::queueInMainThread([self]() {
-                    if (self->getParent()) self->refreshHelperRequestTitle();
-                    self->release();
-                });
-            });
+            // Do not rely on a finite number of delayed rewrites. Keep the helper title
+            // authoritative for the lifetime of this popup; scheduling is automatically
+            // stopped when the layer leaves the scene.
+            this->schedule(schedule_selector(GDRequestsRateStarsLayer::enforceHelperRequestTitle), .05f);
         }
 
         if (captured.active) {
-            // Position feedback from the vanilla Cancel button so it stays to its left even
-            // if the send popup layout changes between platforms/builds.
+            // Anchor both extra controls to the vanilla bottom row: feedback mirrors to the
+            // left of Cancel, while the standard GD checkbox mirrors to the right of Submit.
             auto* sprite = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
             sprite->setScale(.34f);
             auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(GDRequestsRateStarsLayer::onRequestFeedback));
             button->setID("kolorbok.gd-send-logger/request-feedback-button");
             button->setSizeMult(1.f);
+
+            auto* noPing = CCMenuItemToggler::createWithStandardSprites(
+                this,
+                menu_selector(GDRequestsRateStarsLayer::onRequestNoPing),
+                .48f
+            );
+            if (noPing) {
+                noPing->setID("kolorbok.gd-send-logger/request-no-ping-toggle");
+                noPing->setSizeMult(1.f);
+                noPing->toggle(noPingFor(captured));
+            }
+
+            auto* noPingLabel = CCLabelBMFont::create("NO PING", "goldFont.fnt");
+            if (noPingLabel) {
+                noPingLabel->setScale(.28f);
+                noPingLabel->setAnchorPoint({0.f, .5f});
+            }
+
             if (m_submitButton && m_submitButton->getParent()) {
                 auto* parent = m_submitButton->getParent();
-                float x = m_submitButton->getPositionX() - 150.f;
+                float feedbackX = m_submitButton->getPositionX() - 150.f;
                 if (auto* cancel = findBottomRowButtonLeftOf(parent, m_submitButton)) {
-                    x = cancel->getPositionX() - 78.f;
+                    feedbackX = cancel->getPositionX() - 78.f;
                 }
-                button->setPosition({x, m_submitButton->getPositionY()});
+                float y = m_submitButton->getPositionY();
+                button->setPosition({feedbackX, y});
                 parent->addChild(button);
+
+                if (noPing) {
+                    noPing->setPosition({m_submitButton->getPositionX() + 78.f, y});
+                    parent->addChild(noPing);
+                    if (noPingLabel) {
+                        noPingLabel->setPosition({noPing->getPositionX() + 15.f, y});
+                        parent->addChild(noPingLabel);
+                    }
+                }
             } else if (m_buttonMenu) {
-                button->setPosition({m_buttonMenu->getContentSize().width / 2.f, 35.f});
+                button->setPosition({70.f, 35.f});
                 m_buttonMenu->addChild(button);
+                if (noPing) {
+                    noPing->setPosition({m_buttonMenu->getContentSize().width - 70.f, 35.f});
+                    m_buttonMenu->addChild(noPing);
+                    if (noPingLabel) {
+                        noPingLabel->setPosition({noPing->getPositionX() + 15.f, 35.f});
+                        m_buttonMenu->addChild(noPingLabel);
+                    }
+                }
             }
             m_fields->feedbackButton = button;
+            m_fields->noPingToggle = noPing;
+            m_fields->noPingLabel = noPingLabel;
         }
         return true;
     }
 
     void onRequestFeedback(CCObject*) {
         if (m_fields->requestContext.active) openFeedbackEditor(m_fields->requestContext);
+    }
+
+    void onRequestNoPing(CCObject*) {
+        if (!m_fields->requestContext.active) return;
+        bool next = !noPingFor(m_fields->requestContext);
+        setNoPingFor(m_fields->requestContext, next);
+        if (m_fields->noPingToggle) m_fields->noPingToggle->toggle(next);
     }
 
     void onRate(CCObject* sender) {
