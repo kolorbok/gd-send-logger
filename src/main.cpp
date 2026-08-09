@@ -3,7 +3,6 @@
 #include <Geode/modify/LevelSearchLayer.hpp>
 #include <Geode/modify/LevelBrowserLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
-#include <Geode/modify/MenuLayer.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
@@ -82,6 +81,9 @@ static RequestFilters g_filters;
 static ClientState g_client;
 static RequestContext g_context;
 static std::unordered_map<int, RequestMeta> g_requestByLevel;
+static std::vector<RequestMeta> g_requestList;
+static RequestMeta g_selectedRequest;
+static bool g_hasSelectedRequest = false;
 static std::unordered_map<int, std::string> g_feedbackDrafts;
 static bool g_nextBrowserIsRequests = false;
 static bool g_requestBrowserActive = false;
@@ -338,11 +340,11 @@ static std::string requestURL() {
         "&limit=100";
 }
 
-static bool parseRequestsResponse(std::string const& text, std::string& idsCSV) {
+static bool parseRequestsResponse(std::string const& text) {
     std::istringstream stream(text);
     std::string line;
-    std::vector<int> ids;
     g_requestByLevel.clear();
+    g_requestList.clear();
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
@@ -369,70 +371,22 @@ static bool parseRequestsResponse(std::string const& text, std::string& idsCSV) 
             meta.difficulty = parseInt(parts[4]);
             meta.rated = parseInt(parts[5]) != 0;
             if (meta.requestID > 0 && meta.levelID > 0) {
-                g_requestByLevel[meta.levelID] = meta;
-                ids.push_back(meta.levelID);
+                // Preserve API order for the in-game requests hub. For duplicate LevelIDs,
+                // keep the first match in the lookup map (the default queue is newest-first).
+                g_requestList.push_back(meta);
+                if (!g_requestByLevel.contains(meta.levelID)) {
+                    g_requestByLevel.emplace(meta.levelID, meta);
+                }
             }
         }
     }
 
-    if (!gotMeta) return false;
-    std::ostringstream out;
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        if (i) out << ',';
-        out << ids[i];
-    }
-    idsCSV = out.str();
-    return true;
+    return gotMeta;
 }
 
-static void fetchRequests(LevelSearchLayer* source, LevelBrowserLayer* reloadTarget = nullptr) {
-    auto key = connectionKey();
-    if (key.empty()) {
-        showRequestError("Connection Key is empty. Use /geode-link in Discord and paste the key into this mod's settings.");
-        return;
-    }
-
-    auto req = web::WebRequest();
-    req.header("Authorization", "Bearer " + key);
-    req.timeout(std::chrono::seconds(15));
-    auto url = requestURL();
-
-    async::spawn(req.get(url), [source, reloadTarget](web::WebResponse res) {
-        auto text = res.string().unwrapOr("");
-        if (!res.ok()) {
-            showRequestError("Could not load server requests.\n\nHTTP " + std::to_string(res.code()) + "\n" +
-                (text.empty() ? "Empty response" : text));
-            return;
-        }
-
-        std::string ids;
-        if (!parseRequestsResponse(text, ids)) {
-            showRequestError("The request server returned an invalid response.");
-            return;
-        }
-        if (ids.empty()) {
-            showAlert(MOD_NAME, "No requests match these filters.");
-            return;
-        }
-
-        if (reloadTarget && g_requestBrowserActive && reloadTarget == g_requestBrowser && reloadTarget->m_searchObject) {
-            reloadTarget->m_searchObject->m_searchQuery = gd::string(ids.c_str());
-            reloadTarget->m_searchObject->m_page = 0;
-            reloadTarget->loadPage(reloadTarget->m_searchObject);
-            return;
-        }
-
-        if (!source) return;
-        auto* search = source->getSearchObject(SearchType::Search, gd::string(ids.c_str()));
-        if (!search) {
-            showRequestError("Could not create a Geometry Dash search for these requests.");
-            return;
-        }
-        g_nextBrowserIsRequests = true;
-        auto* scene = LevelBrowserLayer::scene(search);
-        CCDirector::sharedDirector()->pushScene(CCTransitionFade::create(0.35f, scene));
-    });
-}
+// Requests are loaded by RequestsHubPopup below. Keeping the HTTP request tied to a
+// visible popup gives the user immediate Loading / Connected / Error feedback and avoids
+// capturing a LevelSearchLayer pointer across an asynchronous request.
 
 class FeedbackDelegate final : public SetTextPopupDelegate {
 public:
@@ -520,7 +474,6 @@ static void cycleValue(T& value, std::vector<T> const& values, int direction) {
 
 class RequestFiltersPopup final : public geode::Popup {
 protected:
-    LevelBrowserLayer* m_owner = nullptr;
     RequestFilters m_working;
     CCLabelBMFont* m_difficulty = nullptr;
     CCLabelBMFont* m_type = nullptr;
@@ -569,8 +522,7 @@ protected:
         if (m_sort) m_sort->setString(prettySort(m_working.sort).c_str());
     }
 
-    bool initFor(LevelBrowserLayer* owner) {
-        m_owner = owner;
+    bool initFor() {
         m_working = g_filters;
         m_staff = g_client.mode == "helper" || g_client.mode == "moderator";
         float height = m_staff ? 290.f : 215.f;
@@ -633,13 +585,13 @@ protected:
     void onApply(CCObject*) {
         g_filters = m_working;
         onClose(nullptr);
-        fetchRequests(nullptr, m_owner);
+        showAlert(MOD_NAME, "Filters saved. Tap Refresh in Server Requests to apply them.");
     }
 
 public:
-    static RequestFiltersPopup* create(LevelBrowserLayer* owner) {
+    static RequestFiltersPopup* create() {
         auto* ret = new RequestFiltersPopup();
-        if (ret && ret->initFor(owner)) {
+        if (ret && ret->initFor()) {
             ret->autorelease();
             return ret;
         }
@@ -786,201 +738,334 @@ $execute {
     });
 }
 
-class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
-    void onRequests(CCObject*) {
-        log::info("[REQUESTS UI] Requests button pressed");
-        g_filters = RequestFilters{};
+class RequestsHubPopup final : public geode::Popup {
+protected:
+    static constexpr int ROWS_PER_PAGE = 5;
+
+    CCLabelBMFont* m_statusLabel = nullptr;
+    CCLabelBMFont* m_metaLabel = nullptr;
+    CCLabelBMFont* m_pageLabel = nullptr;
+    CCMenuItemSpriteExtra* m_prevButton = nullptr;
+    CCMenuItemSpriteExtra* m_nextButton = nullptr;
+    CCMenuItemSpriteExtra* m_filterButton = nullptr;
+    CCMenuItemSpriteExtra* m_refreshButton = nullptr;
+    std::vector<CCMenuItemSpriteExtra*> m_rowButtons;
+    int m_page = 0;
+    bool m_loading = false;
+
+    static std::string modeLabel() {
+        if (g_client.mode == "moderator") return "MODERATOR";
+        if (g_client.mode == "helper") return "HELPER";
+        if (g_client.mode == "reviewer") return "REVIEWER";
+        return "ALL";
+    }
+
+    static std::string shortID(std::string const& value) {
+        if (value.size() <= 12) return value;
+        return value.substr(0, 6) + "..." + value.substr(value.size() - 4);
+    }
+
+    static std::string rowText(RequestMeta const& meta) {
+        std::string text = "#" + std::to_string(meta.requestID) + "   ID " + std::to_string(meta.levelID);
+        if (meta.difficulty > 0) text += "   " + std::to_string(meta.difficulty) + "*";
+        text += meta.rated ? "   RATED" : "   UNRATED";
+        return text;
+    }
+
+    void setStatus(std::string const& text) {
+        if (m_statusLabel) m_statusLabel->setString(text.c_str());
+    }
+
+    void updatePage() {
+        for (auto* button : m_rowButtons) {
+            if (button) button->removeFromParentAndCleanup(true);
+        }
+        m_rowButtons.clear();
+
+        int count = static_cast<int>(g_requestList.size());
+        int pages = std::max(1, (count + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
+        if (m_page >= pages) m_page = pages - 1;
+        if (m_page < 0) m_page = 0;
+
+        if (m_pageLabel) {
+            auto text = "PAGE " + std::to_string(m_page + 1) + "/" + std::to_string(pages);
+            m_pageLabel->setString(text.c_str());
+        }
+        if (m_prevButton) m_prevButton->setVisible(!m_loading && m_page > 0);
+        if (m_nextButton) m_nextButton->setVisible(!m_loading && m_page + 1 < pages);
+
+        if (m_loading) return;
+        if (g_requestList.empty()) {
+            setStatus("Connected - no requests match these filters");
+            return;
+        }
+
+        int start = m_page * ROWS_PER_PAGE;
+        for (int row = 0; row < ROWS_PER_PAGE; ++row) {
+            int index = start + row;
+            if (index >= count) break;
+            auto const& meta = g_requestList[index];
+            auto text = rowText(meta);
+            auto* sprite = ButtonSprite::create(
+                text.c_str(), 330, true, "bigFont.fnt", "GJ_button_01.png", 26.f, .42f
+            );
+            if (!sprite) continue;
+            auto* button = CCMenuItemSpriteExtra::create(
+                sprite, this, menu_selector(RequestsHubPopup::onOpenRequest)
+            );
+            if (!button) continue;
+            button->setTag(row);
+            button->setPosition({220.f, 205.f - row * 34.f});
+            m_buttonMenu->addChild(button);
+            m_rowButtons.push_back(button);
+        }
+    }
+
+    void applyLoadedState() {
+        auto meta = "CONNECTED  |  " + modeLabel() + "  |  " +
+            std::to_string(g_client.returned) + "/" + std::to_string(g_client.total) + " REQUESTS";
+        setStatus(meta);
+        if (m_metaLabel) {
+            auto ids = "SERVER " + shortID(g_client.serverID) + "  -  USER " + shortID(g_client.userID);
+            m_metaLabel->setString(ids.c_str());
+        }
+        if (m_filterButton) m_filterButton->setVisible(true);
+        updatePage();
+    }
+
+    void loadRequests() {
+        if (m_loading) return;
+        auto key = connectionKey();
+        if (key.empty()) {
+            setStatus("Connection Key is empty - use /geode-link in Discord");
+            return;
+        }
+
+        m_loading = true;
         g_client = ClientState{};
         g_context = RequestContext{};
         g_requestBrowserActive = false;
         g_requestBrowser = nullptr;
-        fetchRequests(this, nullptr);
+        g_requestList.clear();
+        g_requestByLevel.clear();
+        g_hasSelectedRequest = false;
+        setStatus("Loading server requests...");
+        if (m_metaLabel) m_metaLabel->setString("Connecting to Discord bot...");
+        if (m_filterButton) m_filterButton->setVisible(false);
+        updatePage();
+
+        auto req = web::WebRequest();
+        req.header("Authorization", "Bearer " + key);
+        req.timeout(std::chrono::seconds(15));
+        auto url = requestURL();
+
+        this->retain();
+        async::spawn(req.get(url), [self = this](web::WebResponse res) {
+            auto text = res.string().unwrapOr("");
+            self->m_loading = false;
+
+            // The popup may have been closed while the request was in flight. Retain keeps
+            // the pointer valid; avoid touching detached UI in that case.
+            if (!self->getParent()) {
+                self->release();
+                return;
+            }
+
+            if (!res.ok()) {
+                self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
+                if (self->m_metaLabel) {
+                    self->m_metaLabel->setString(
+                        limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
+                    );
+                }
+                self->updatePage();
+                self->release();
+                return;
+            }
+
+            if (!parseRequestsResponse(text)) {
+                self->setStatus("Invalid response from request server");
+                if (self->m_metaLabel) self->m_metaLabel->setString(limitPopupText(text, 120).c_str());
+                self->updatePage();
+                self->release();
+                return;
+            }
+
+            self->m_page = 0;
+            self->applyLoadedState();
+            self->release();
+        });
     }
 
-    void installAbsoluteProbeButton() {
-        // TEMPORARY DIAGNOSTIC CONTROL.
-        // This deliberately ignores every existing menu/layout and is attached straight
-        // to LevelSearchLayer with a huge z-order. If this is visible, the hook definitely
-        // ran and any missing right-side button is a layout/injection problem.
-        if (this->getChildByID("kolorbok.gd-send-logger/requests-probe-menu")) return;
+    bool init() {
+        if (!Popup::init(440.f, 300.f)) return false;
+        setTitle("SERVER REQUESTS");
 
-        auto winSize = CCDirector::get()->getWinSize();
-        auto* menu = CCMenu::create();
-        if (!menu) return;
-        menu->setID("kolorbok.gd-send-logger/requests-probe-menu");
-        menu->setPosition({0.f, 0.f});
-        menu->setContentSize(winSize);
-        menu->setAnchorPoint({0.f, 0.f});
-        menu->setZOrder(100000);
+        m_statusLabel = CCLabelBMFont::create("Loading server requests...", "bigFont.fnt");
+        m_statusLabel->setScale(.43f);
+        m_statusLabel->setPosition({220.f, 250.f});
+        m_mainLayer->addChild(m_statusLabel);
 
-        auto* sprite = ButtonSprite::create(
-            "REQ TEST", 95, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .62f
-        );
-        if (!sprite) return;
+        m_metaLabel = CCLabelBMFont::create("", "goldFont.fnt");
+        m_metaLabel->setScale(.28f);
+        m_metaLabel->setPosition({220.f, 232.f});
+        m_mainLayer->addChild(m_metaLabel);
 
-        auto* button = CCMenuItemSpriteExtra::create(
-            sprite,
-            this,
-            menu_selector(GDRequestsLevelSearchLayer::onRequests)
-        );
-        if (!button) return;
-        button->setID("kolorbok.gd-send-logger/requests-probe-button");
+        m_pageLabel = CCLabelBMFont::create("PAGE 1/1", "bigFont.fnt");
+        m_pageLabel->setScale(.32f);
+        m_pageLabel->setPosition({220.f, 34.f});
+        m_mainLayer->addChild(m_pageLabel);
 
-        // Bottom-center is intentionally absolute. We do not care about overlap in this
-        // diagnostic build; the goal is to prove that LevelSearchLayer::init is reached.
-        button->setPosition({winSize.width / 2.f, 28.f});
-        menu->addChild(button);
-        this->addChild(menu, 100000);
+        auto* prevSprite = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+        prevSprite->setScale(.55f);
+        m_prevButton = CCMenuItemSpriteExtra::create(prevSprite, this, menu_selector(RequestsHubPopup::onPrev));
+        m_prevButton->setPosition({55.f, 34.f});
+        m_buttonMenu->addChild(m_prevButton);
 
-        log::info(
-            "[REQUESTS UI] ABSOLUTE REQ TEST installed at x={}, y={}",
-            button->getPositionX(), button->getPositionY()
-        );
-    }
+        auto* nextSprite = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+        nextSprite->setFlipX(true);
+        nextSprite->setScale(.55f);
+        m_nextButton = CCMenuItemSpriteExtra::create(nextSprite, this, menu_selector(RequestsHubPopup::onNext));
+        m_nextButton->setPosition({385.f, 34.f});
+        m_buttonMenu->addChild(m_nextButton);
 
-    void installRequestsButton() {
-        // This is safe to call repeatedly. NodeIDs::provideFor is the officially
-        // documented way to ensure registered IDs exist before another mod uses them.
-        NodeIDs::provideFor(this);
+        auto* filterSprite = ButtonSprite::create("FILTERS", 72, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .55f);
+        m_filterButton = CCMenuItemSpriteExtra::create(filterSprite, this, menu_selector(RequestsHubPopup::onFilters));
+        m_filterButton->setPosition({125.f, 34.f});
+        m_buttonMenu->addChild(m_filterButton);
+        m_filterButton->setVisible(false);
 
-        // Node IDs' current LevelSearchLayer provider explicitly maps CCMenu #0 to
-        // "other-filter-menu". Use that exact vanilla menu index first, then the ID as fallback.
-        auto* menu = this->getChildByType<CCMenu>(0);
-        bool usedVanillaFallback = false;
-        if (!menu) {
-            menu = typeinfo_cast<CCMenu*>(this->getChildByID("other-filter-menu"));
-            usedVanillaFallback = menu != nullptr;
-        }
+        auto* refreshSprite = ButtonSprite::create("REFRESH", 76, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .55f);
+        m_refreshButton = CCMenuItemSpriteExtra::create(refreshSprite, this, menu_selector(RequestsHubPopup::onRefresh));
+        m_refreshButton->setPosition({315.f, 34.f});
+        m_buttonMenu->addChild(m_refreshButton);
 
-        if (!menu) {
-            log::error("[REQUESTS UI] LevelSearchLayer CCMenu #0 / other-filter-menu was not found");
-            return;
-        }
-
-        log::info(
-            "[REQUESTS UI] right menu found: id='{}', children={}, layout={}",
-            menu->getID(),
-            menu->getChildrenCount(),
-            menu->getLayout() ? "yes" : "no"
-        );
-
-        if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
-
-        // Use a labelled vanilla GD button for this diagnostic build so it cannot be
-        // mistaken for the existing '+' button on the Search screen.
-        auto* sprite = ButtonSprite::create(
-            "REQ", 48, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .58f
-        );
-        if (!sprite) {
-            log::error("[REQUESTS UI] Could not create REQ ButtonSprite");
-            return;
-        }
-
-        auto* button = CCMenuItemSpriteExtra::create(
-            sprite,
-            this,
-            menu_selector(GDRequestsLevelSearchLayer::onRequests)
-        );
-        if (!button) {
-            log::error("[REQUESTS UI] Could not create Requests menu item");
-            return;
-        }
-
-        button->setID("kolorbok.gd-send-logger/requests-button");
-        button->setZOrder(1000);
-        button->setVisible(true);
-        menu->addChild(button);
-
-        if (menu->getLayout()) {
-            menu->updateLayout();
-        }
-        else {
-            // Should not happen with Node IDs, but keep the real button visible anyway.
-            button->setPosition({menu->getContentSize().width / 2.f, menu->getContentSize().height / 2.f});
-        }
-
-        log::info(
-            "[REQUESTS UI] right-side REQ installed (fallback={}, children={}, x={}, y={})",
-            usedVanillaFallback,
-            menu->getChildrenCount(),
-            button->getPositionX(),
-            button->getPositionY()
-        );
-    }
-
-    bool init(int type) {
-        log::info("[REQUESTS UI] ENTER LevelSearchLayer::init(type={})", type);
-        if (!LevelSearchLayer::init(type)) {
-            log::error("[REQUESTS UI] base LevelSearchLayer::init returned false");
-            return false;
-        }
-
-        log::info(
-            "[REQUESTS UI] AFTER BASE LevelSearchLayer::init: direct children={}",
-            this->getChildrenCount()
-        );
-
-        // Install both. The absolute probe is temporary and intentionally ignores layouts.
-        this->installAbsoluteProbeButton();
-        this->installRequestsButton();
-
-        // Run again on the next main-thread turn in case another post-init hook rebuilds
-        // the Search UI after us.
+        // Defer the first request until the next main-thread tick. create() returns before
+        // Popup::show() attaches us to the scene; waiting one tick guarantees the user
+        // actually sees the Loading state and avoids treating a not-yet-shown popup as closed.
         this->retain();
         geode::queueInMainThread([self = this]() {
-            log::info("[REQUESTS UI] queued LevelSearchLayer UI verification");
-            self->installAbsoluteProbeButton();
-            self->installRequestsButton();
+            if (self->getParent()) self->loadRequests();
             self->release();
         });
         return true;
     }
-};
 
-// Independent diagnostic hook. This does NOT depend on LevelSearchLayer or Node IDs.
-// If REQ HOOK is visible on the Geometry Dash main menu, this build is installed and
-// our modify hooks are being claimed correctly. Pressing it opens the vanilla Search UI.
-class $modify(GDRequestsMenuLayerProbe, MenuLayer) {
-    bool init() {
-        if (!MenuLayer::init()) return false;
+    void onOpenRequest(CCObject* sender) {
+        auto* node = typeinfo_cast<CCNode*>(sender);
+        if (!node || m_loading) return;
+        int index = m_page * ROWS_PER_PAGE + node->getTag();
+        if (index < 0 || index >= static_cast<int>(g_requestList.size())) return;
 
-        auto winSize = CCDirector::get()->getWinSize();
-        auto* menu = CCMenu::create();
-        if (!menu) return true;
-        menu->setID("kolorbok.gd-send-logger/main-probe-menu");
-        menu->setPosition({0.f, 0.f});
-        menu->setContentSize(winSize);
-        menu->setAnchorPoint({0.f, 0.f});
-        menu->setZOrder(100000);
+        auto meta = g_requestList[index];
 
-        auto* sprite = ButtonSprite::create(
-            "REQ 2.0.4", 115, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f
-        );
-        if (!sprite) return true;
-
-        auto* button = CCMenuItemSpriteExtra::create(
-            sprite,
-            this,
-            menu_selector(GDRequestsMenuLayerProbe::onRequestsProbe)
-        );
-        if (!button) return true;
-        button->setID("kolorbok.gd-send-logger/main-probe-button");
-        button->setPosition({winSize.width / 2.f, 22.f});
-        menu->addChild(button);
-        this->addChild(menu, 100000);
-
-        log::info("[REQUESTS UI] REQ HOOK main-menu probe installed");
-        return true;
-    }
-
-    void onRequestsProbe(CCObject*) {
-        log::info("[REQUESTS UI] REQ HOOK pressed; opening vanilla LevelSearchLayer");
-        auto* scene = LevelSearchLayer::scene(0);
-        if (!scene) {
-            showAlert("GD Requests", "LevelSearchLayer::scene(0) returned null.");
+        // Build a plain exact-ID search object directly. Geode's 2.2081 bindings expose
+        // GJSearchObject::create(SearchType, query) and LevelBrowserLayer::scene(object),
+        // so this no longer depends on LevelSearchLayer::getSearchObject or a CSV query.
+        auto query = std::to_string(meta.levelID);
+        auto* search = GJSearchObject::create(SearchType::Search, gd::string(query.c_str()));
+        if (!search) {
+            showRequestError("Could not create a Geometry Dash search for level " + query + ".");
             return;
         }
+
+        // IMPORTANT: LevelBrowserLayer::scene() constructs the layer synchronously, so the
+        // request flag and exact RequestID must be set BEFORE scene() calls our init hook.
+        // Keeping the full request list/map intact lets the hub stay usable after Back.
+        g_selectedRequest = meta;
+        g_hasSelectedRequest = true;
+        g_nextBrowserIsRequests = true;
+
+        auto* scene = LevelBrowserLayer::scene(search);
+        if (!scene) {
+            g_nextBrowserIsRequests = false;
+            g_hasSelectedRequest = false;
+            g_selectedRequest = RequestMeta{};
+            showRequestError("Geometry Dash could not create the level browser scene.");
+            return;
+        }
+
         CCDirector::sharedDirector()->pushScene(CCTransitionFade::create(.25f, scene));
+    }
+
+    void onPrev(CCObject*) {
+        if (m_page > 0) {
+            --m_page;
+            updatePage();
+        }
+    }
+
+    void onNext(CCObject*) {
+        int pages = std::max(1, (static_cast<int>(g_requestList.size()) + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
+        if (m_page + 1 < pages) {
+            ++m_page;
+            updatePage();
+        }
+    }
+
+    void onFilters(CCObject*) {
+        if (auto* popup = RequestFiltersPopup::create()) popup->show();
+    }
+
+    void onRefresh(CCObject*) {
+        loadRequests();
+    }
+
+public:
+    static RequestsHubPopup* create() {
+        auto* ret = new RequestsHubPopup();
+        if (ret && ret->init()) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+};
+
+class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
+    void onRequests(CCObject*) {
+        log::info("[REQUESTS UI] Requests button pressed");
+        if (auto* popup = RequestsHubPopup::create()) {
+            popup->show();
+        } else {
+            showRequestError("Could not create the Server Requests window.");
+        }
+    }
+
+    void installRequestsButton() {
+        NodeIDs::provideFor(this);
+        auto* menu = typeinfo_cast<CCMenu*>(this->getChildByID("other-filter-menu"));
+        if (!menu) menu = this->getChildByType<CCMenu>(0);
+        if (!menu) {
+            log::error("[REQUESTS UI] other-filter-menu was not found");
+            return;
+        }
+        if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
+
+        auto* sprite = ButtonSprite::create(
+            "REQ", 48, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .58f
+        );
+        if (!sprite) return;
+        auto* button = CCMenuItemSpriteExtra::create(
+            sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
+        );
+        if (!button) return;
+        button->setID("kolorbok.gd-send-logger/requests-button");
+        menu->addChild(button);
+        if (menu->getLayout()) menu->updateLayout();
+        else button->setPosition({menu->getContentSize().width / 2.f, menu->getContentSize().height / 2.f});
+    }
+
+    bool init(int type) {
+        if (!LevelSearchLayer::init(type)) return false;
+        installRequestsButton();
+        this->retain();
+        geode::queueInMainThread([self = this]() {
+            self->installRequestsButton();
+            self->release();
+        });
+        return true;
     }
 };
 
@@ -993,34 +1078,31 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             g_nextBrowserIsRequests = false;
             g_requestBrowserActive = true;
             g_requestBrowser = this;
-
-            if (auto* menu = typeinfo_cast<CCMenu*>(getChildByID("search-menu"))) {
-                auto* sprite = CCSprite::createWithSpriteFrameName("GJ_plusBtn_001.png");
-                sprite->setScale(.7f);
-                auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(GDRequestsLevelBrowserLayer::onRequestFilters));
-                button->setID("kolorbok.gd-send-logger/request-filter-button");
-                menu->addChild(button);
-                menu->updateLayout();
-            }
         }
         return true;
     }
 
     gd::string getSearchTitle() {
-        if (g_requestBrowserActive && g_requestBrowser == this) return "Server Requests";
+        if (g_requestBrowserActive && g_requestBrowser == this) {
+            if (g_hasSelectedRequest && g_selectedRequest.requestID > 0) {
+                auto title = "Request #" + std::to_string(g_selectedRequest.requestID);
+                return gd::string(title.c_str());
+            }
+            return "Server Request";
+        }
         return LevelBrowserLayer::getSearchTitle();
-    }
-
-    void onRequestFilters(CCObject*) {
-        if (auto* popup = RequestFiltersPopup::create(this)) popup->show();
     }
 
     void onBack(CCObject* sender) {
         bool wasRequestBrowser = g_requestBrowserActive && g_requestBrowser == this;
         if (wasRequestBrowser) {
+            // The Server Requests hub is still on the previous scene. Clear only the
+            // transient context for the opened request; keep its loaded rows and client META
+            // so Back returns to the same usable hub instead of an emptied window.
             g_requestBrowserActive = false;
             g_requestBrowser = nullptr;
-            g_requestByLevel.clear();
+            g_hasSelectedRequest = false;
+            g_selectedRequest = RequestMeta{};
             g_context = RequestContext{};
         }
         LevelBrowserLayer::onBack(sender);
@@ -1039,12 +1121,19 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
         m_fields->requestContext = RequestContext{};
         if (g_requestBrowserActive && g_requestBrowser && level) {
             int levelID = level->m_levelID;
-            auto it = g_requestByLevel.find(levelID);
-            if (it != g_requestByLevel.end()) {
+            if (g_hasSelectedRequest && g_selectedRequest.levelID == levelID) {
                 m_fields->requestContext.active = true;
-                m_fields->requestContext.request = it->second;
+                m_fields->requestContext.request = g_selectedRequest;
                 m_fields->requestContext.mode = g_client.mode;
                 g_context = m_fields->requestContext;
+            } else {
+                auto it = g_requestByLevel.find(levelID);
+                if (it != g_requestByLevel.end()) {
+                    m_fields->requestContext.active = true;
+                    m_fields->requestContext.request = it->second;
+                    m_fields->requestContext.mode = g_client.mode;
+                    g_context = m_fields->requestContext;
+                }
             }
         }
 
