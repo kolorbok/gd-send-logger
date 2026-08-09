@@ -340,7 +340,7 @@ static std::string requestURL() {
         "&minSend=" + g_filters.minSend +
         "&rated=" + g_filters.rated +
         "&sort=" + g_filters.sort +
-        "&limit=100";
+        "&limit=10000";
 }
 
 static bool parseRequestsResponse(std::string const& text) {
@@ -400,17 +400,18 @@ class FeedbackPopup final : public geode::Popup {
 protected:
     RequestContext m_context;
     geode::TextInput* m_input = nullptr;
-    TextArea* m_preview = nullptr;
+    TextArea* m_textArea = nullptr;
     CCLabelBMFont* m_counter = nullptr;
     std::string m_value;
 
-    void refreshPreview(std::string const& value) {
+    void refreshTextArea(std::string const& value) {
         m_value = value;
         if (m_value.size() > FEEDBACK_LIMIT) m_value.resize(FEEDBACK_LIMIT);
 
-        if (m_preview) {
-            auto previewText = m_value.empty() ? std::string("...") : m_value;
-            m_preview->setString(gd::string(previewText.c_str()));
+        if (m_textArea) {
+            auto display = m_value.empty() ? std::string("Write feedback...") : m_value;
+            m_textArea->setString(gd::string(display.c_str()));
+            m_textArea->setOpacity(m_value.empty() ? 145 : 255);
         }
         if (m_counter) {
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
@@ -421,65 +422,76 @@ protected:
     bool initFor(RequestContext const& context) {
         m_context = context;
         m_value = feedbackFor(context);
-        if (!Popup::init(440.f, 300.f)) return false;
-        setTitle("REQUEST FEEDBACK");
+        if (!Popup::init(390.f, 245.f)) return false;
+        setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
 
-        auto* hint = CCLabelBMFont::create("Type below - the full feedback wraps in the preview", "goldFont.fnt");
-        hint->setScale(.30f);
-        hint->setPosition({220.f, 252.f});
-        m_mainLayer->addChild(hint);
-
-        m_input = geode::TextInput::create(360.f, "Write feedback...", "chatFont.fnt");
+        // Keep the real GD/Geode input focused for keyboard/IME handling, but render its
+        // value through a TextArea so the editor itself behaves visually like a multiline box.
+        m_input = geode::TextInput::create(328.f, "", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({220.f, 221.f});
+        m_input->setPosition({195.f, 139.f});
         m_input->setTextAlign(geode::TextInputAlign::Left);
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
         m_input->setString(gd::string(m_value.c_str()));
+        if (auto* bg = m_input->getBGSprite()) {
+            bg->setContentSize({328.f, 132.f});
+        }
+        if (auto* node = m_input->getInputNode()) {
+            if (auto* label = node->getTextLabel()) label->setVisible(false);
+            if (node->m_cursor) node->m_cursor->setVisible(false);
+        }
         m_mainLayer->addChild(m_input);
 
-        auto* previewLabel = CCLabelBMFont::create("PREVIEW", "goldFont.fnt");
-        previewLabel->setScale(.28f);
-        previewLabel->setAnchorPoint({0.f, .5f});
-        previewLabel->setPosition({42.f, 191.f});
-        m_mainLayer->addChild(previewLabel);
-
-        auto initialPreview = m_value.empty() ? std::string("...") : m_value;
-        m_preview = TextArea::create(
-            gd::string(initialPreview.c_str()),
+        auto initialText = m_value.empty() ? std::string("Write feedback...") : m_value;
+        m_textArea = TextArea::create(
+            gd::string(initialText.c_str()),
             "chatFont.fnt",
-            .52f,
-            356.f,
+            .54f,
+            306.f,
             {0.f, 1.f},
             18.f,
             true
         );
-        if (m_preview) {
-            m_preview->setPosition({42.f, 174.f});
-            m_mainLayer->addChild(m_preview);
+        if (m_textArea) {
+            m_textArea->setPosition({42.f, 190.f});
+            m_mainLayer->addChild(m_textArea, 2);
+            if (auto* node = m_input->getInputNode()) node->addTextArea(m_textArea);
         }
+
+        // Transparent hit area: tapping anywhere in the large feedback box focuses the
+        // underlying text input instead of forcing the user to hit a one-line field.
+        auto* focusArea = CCLayerColor::create(ccc4(0, 0, 0, 0), 328.f, 132.f);
+        auto* focusBtn = CCMenuItemSpriteExtra::create(focusArea, this, menu_selector(FeedbackPopup::onFocus));
+        focusBtn->setPosition({195.f, 139.f});
+        focusBtn->setSizeMult(1.f);
+        m_buttonMenu->addChild(focusBtn, 1);
 
         m_counter = CCLabelBMFont::create("0/1500", "goldFont.fnt");
         m_counter->setScale(.27f);
         m_counter->setAnchorPoint({1.f, .5f});
-        m_counter->setPosition({398.f, 72.f});
+        m_counter->setPosition({354.f, 62.f});
         m_mainLayer->addChild(m_counter);
 
-        auto* cancelSpr = ButtonSprite::create("Cancel", 82, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .62f);
+        auto* cancelSpr = ButtonSprite::create("Cancel", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(FeedbackPopup::onCancel));
-        cancelBtn->setPosition({155.f, 42.f});
+        cancelBtn->setPosition({135.f, 35.f});
         m_buttonMenu->addChild(cancelBtn);
 
-        auto* saveSpr = ButtonSprite::create("Save", 82, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .62f);
+        auto* saveSpr = ButtonSprite::create("Save", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .60f);
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(FeedbackPopup::onSave));
-        saveBtn->setPosition({285.f, 42.f});
+        saveBtn->setPosition({255.f, 35.f});
         m_buttonMenu->addChild(saveBtn);
 
         m_input->setCallback([this](std::string const& value) {
-            this->refreshPreview(value);
+            this->refreshTextArea(value);
         });
-        refreshPreview(m_value);
+        refreshTextArea(m_value);
         return true;
+    }
+
+    void onFocus(CCObject*) {
+        if (m_input) m_input->focus();
     }
 
     void onCancel(CCObject*) { onClose(nullptr); }
@@ -760,62 +772,82 @@ static void postRequestAction(RequestContext context, std::string action, std::s
 
 class RejectPopup final : public geode::Popup {
 protected:
+    struct ReasonChoice {
+        std::string label;
+        std::string reason;
+        CCMenuItemSpriteExtra* button = nullptr;
+    };
+
     RequestContext m_context;
     std::string m_reason;
-    std::vector<CCMenuItemToggler*> m_reasonButtons;
+    std::vector<ReasonChoice> m_reasonButtons;
+
+    static ButtonSprite* makeReasonSprite(std::string const& label, bool selected) {
+        return ButtonSprite::create(
+            label.c_str(),
+            112,
+            true,
+            "bigFont.fnt",
+            selected ? "GJ_button_01.png" : "GJ_button_04.png",
+            28.f,
+            .52f
+        );
+    }
 
     void updateButtons() {
-        static std::vector<std::string> values = {"not_sent", "already_seen", "already_rated", "report"};
-        for (std::size_t i = 0; i < m_reasonButtons.size() && i < values.size(); ++i) {
-            if (m_reasonButtons[i]) m_reasonButtons[i]->toggle(values[i] == m_reason);
+        for (auto& choice : m_reasonButtons) {
+            if (!choice.button) continue;
+            if (auto* sprite = makeReasonSprite(choice.label, choice.reason == m_reason)) {
+                choice.button->setSprite(sprite);
+                choice.button->setSizeMult(1.f);
+            }
         }
     }
 
-    CCMenuItemToggler* reasonButton(char const* label, std::string reason, CCPoint pos) {
-        // Use a real GD toggler: gray = off, green = selected. updateButtons() makes the
-        // four toggles a radio group, so selecting one always releases the previous one.
-        auto* off = ButtonSprite::create(label, 128, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .52f);
-        auto* on = ButtonSprite::create(label, 128, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .52f);
-        auto* btn = CCMenuItemToggler::create(off, on, this, menu_selector(RejectPopup::onReason));
+    CCMenuItemSpriteExtra* reasonButton(char const* label, std::string reason, CCPoint pos) {
+        auto* sprite = makeReasonSprite(label, false);
+        if (!sprite) return nullptr;
+        auto* btn = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(RejectPopup::onReason));
         if (!btn) return nullptr;
         btn->setPosition(pos);
         btn->setSizeMult(1.f);
         btn->setUserObject(CCString::create(reason.c_str()));
-        // CCMenuItemToggler can dispatch through its internal sprite item depending on
-        // platform/build, so keep the reason on all possible callback senders.
-        if (btn->m_offButton) btn->m_offButton->setUserObject(CCString::create(reason.c_str()));
-        if (btn->m_onButton) btn->m_onButton->setUserObject(CCString::create(reason.c_str()));
-        btn->toggle(false);
         m_buttonMenu->addChild(btn);
-        m_reasonButtons.push_back(btn);
+        m_reasonButtons.push_back({label, reason, btn});
         return btn;
     }
 
     bool initFor(RequestContext const& context) {
         m_context = context;
-        if (!Popup::init(440.f, 250.f)) return false;
-        setTitle("NOT SENT");
+        if (!Popup::init(400.f, 190.f)) return false;
 
-        reasonButton("Not Sent", "not_sent", {128.f, 158.f});
-        reasonButton("Already Seen", "already_seen", {312.f, 158.f});
-        reasonButton("Already Rated", "already_rated", {128.f, 108.f});
-        reasonButton("Report", "report", {312.f, 108.f});
+        auto title = context.mode == "helper" ? "HELPER: REJECTION REASON" : "MOD: REJECTION REASON";
+        setTitle(title.c_str(), "bigFont.fnt", context.mode == "helper" ? .50f : .56f, 20.f);
 
-        auto* feedbackSpr = ButtonSprite::create("Feedback", 88, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .50f);
-        auto* feedbackBtn = CCMenuItemSpriteExtra::create(feedbackSpr, this, menu_selector(RejectPopup::onFeedback));
-        feedbackBtn->setPosition({102.f, 45.f});
-        feedbackBtn->setID("kolorbok.gd-send-logger/request-feedback-button");
-        m_buttonMenu->addChild(feedbackBtn);
+        reasonButton("Wrong ID", "wrong_id", {112.f, 118.f});
+        reasonButton("Already Seen", "already_seen", {288.f, 118.f});
+        reasonButton("Already Rated", "already_rated", {112.f, 78.f});
+        reasonButton("Report", "report", {288.f, 78.f});
 
-        auto* cancelSpr = ButtonSprite::create("Cancel", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .62f);
+        auto* cancelSpr = ButtonSprite::create("Cancel", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(RejectPopup::onCancel));
-        cancelBtn->setPosition({220.f, 45.f});
+        cancelBtn->setPosition({205.f, 30.f});
         m_buttonMenu->addChild(cancelBtn);
 
-        auto* submitSpr = ButtonSprite::create("Submit", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .62f);
+        auto* submitSpr = ButtonSprite::create("Submit", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .60f);
         auto* submitBtn = CCMenuItemSpriteExtra::create(submitSpr, this, menu_selector(RejectPopup::onSubmit));
-        submitBtn->setPosition({338.f, 45.f});
+        submitBtn->setPosition({310.f, 30.f});
         m_buttonMenu->addChild(submitBtn);
+
+        auto* feedbackSpr = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
+        feedbackSpr->setScale(.32f);
+        auto* feedbackBtn = CCMenuItemSpriteExtra::create(feedbackSpr, this, menu_selector(RejectPopup::onFeedback));
+        feedbackBtn->setID("kolorbok.gd-send-logger/request-feedback-button");
+        feedbackBtn->setSizeMult(1.f);
+        float cancelHalfWidth = cancelBtn->getContentSize().width * cancelBtn->getScaleX() * .5f;
+        float feedbackHalfWidth = feedbackBtn->getContentSize().width * feedbackBtn->getScaleX() * .5f;
+        feedbackBtn->setPosition({cancelBtn->getPositionX() - cancelHalfWidth - feedbackHalfWidth - 8.f, cancelBtn->getPositionY()});
+        m_buttonMenu->addChild(feedbackBtn);
 
         updateButtons();
         return true;
@@ -869,7 +901,6 @@ class RequestsHubPopup final : public geode::Popup {
 protected:
     CCLabelBMFont* m_statusLabel = nullptr;
     CCLabelBMFont* m_metaLabel = nullptr;
-    CCLabelBMFont* m_eventLabel = nullptr;
     CCMenuItemSpriteExtra* m_openButton = nullptr;
     CCMenuItemSpriteExtra* m_filterButton = nullptr;
     CCMenuItemSpriteExtra* m_refreshButton = nullptr;
@@ -910,21 +941,19 @@ protected:
     }
 
     void applyLoadedState() {
-        // parseRequestsResponse already strips every Event != 0 row. Show the actual count
-        // that can be opened, rather than backend META totals that may include event queues.
-        g_client.returned = static_cast<int>(g_requestList.size());
+        auto loadedCount = static_cast<int>(g_requestList.size());
+        auto foundCount = g_client.total > 0 ? g_client.total : loadedCount;
         auto meta = "CONNECTED  |  " + modeLabel() + "  |  " +
-            std::to_string(g_requestList.size()) + " REQUESTS";
+            std::to_string(foundCount) + " FOUND";
         setStatus(meta);
         if (m_metaLabel) {
             auto ids = "SERVER " + shortID(g_client.serverID) + "  -  USER " + shortID(g_client.userID);
             m_metaLabel->setString(ids.c_str());
         }
-        if (m_eventLabel) m_eventLabel->setString("EVENT 0 ONLY");
         refreshButtons();
 
         if (g_requestList.empty()) {
-            setStatus("No Event 0 requests match these filters");
+            setStatus("No requests match these filters");
         }
     }
 
@@ -947,12 +976,11 @@ protected:
         g_selectedRequest = RequestMeta{};
         setStatus("Loading server requests...");
         if (m_metaLabel) m_metaLabel->setString("Connecting to Discord bot...");
-        if (m_eventLabel) m_eventLabel->setString("EVENT 0 ONLY");
         refreshButtons();
 
         auto req = web::WebRequest();
         req.header("Authorization", "Bearer " + key);
-        req.timeout(std::chrono::seconds(15));
+        req.timeout(std::chrono::seconds(30));
         auto url = requestURL();
 
         this->retain();
@@ -991,44 +1019,36 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(440.f, 235.f)) return false;
+        if (!Popup::init(440.f, 205.f)) return false;
         setTitle("SERVER REQUESTS");
 
         m_statusLabel = CCLabelBMFont::create("Loading server requests...", "bigFont.fnt");
         m_statusLabel->setScale(.42f);
-        m_statusLabel->setPosition({220.f, 184.f});
+        m_statusLabel->setPosition({220.f, 154.f});
         m_mainLayer->addChild(m_statusLabel);
 
         m_metaLabel = CCLabelBMFont::create("", "goldFont.fnt");
         m_metaLabel->setScale(.28f);
-        m_metaLabel->setPosition({220.f, 163.f});
+        m_metaLabel->setPosition({220.f, 134.f});
         m_mainLayer->addChild(m_metaLabel);
 
-        m_eventLabel = CCLabelBMFont::create("EVENT 0 ONLY", "goldFont.fnt");
-        m_eventLabel->setScale(.31f);
-        m_eventLabel->setPosition({220.f, 143.f});
-        m_mainLayer->addChild(m_eventLabel);
 
         auto* openSprite = ButtonSprite::create("OPEN LEVELS", 190, true, "bigFont.fnt", "GJ_button_01.png", 34.f, .64f);
         m_openButton = CCMenuItemSpriteExtra::create(openSprite, this, menu_selector(RequestsHubPopup::onOpenLevels));
-        m_openButton->setPosition({220.f, 103.f});
+        m_openButton->setPosition({220.f, 92.f});
         m_buttonMenu->addChild(m_openButton);
         m_openButton->setVisible(false);
 
-        auto* hint = CCLabelBMFont::create("Uses Geometry Dash's native level list", "chatFont.fnt");
-        hint->setScale(.50f);
-        hint->setPosition({220.f, 76.f});
-        m_mainLayer->addChild(hint);
 
         auto* filterSprite = ButtonSprite::create("FILTERS", 92, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .54f);
         m_filterButton = CCMenuItemSpriteExtra::create(filterSprite, this, menu_selector(RequestsHubPopup::onFilters));
-        m_filterButton->setPosition({145.f, 38.f});
+        m_filterButton->setPosition({145.f, 32.f});
         m_buttonMenu->addChild(m_filterButton);
         m_filterButton->setVisible(false);
 
         auto* refreshSprite = ButtonSprite::create("REFRESH", 92, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .54f);
         m_refreshButton = CCMenuItemSpriteExtra::create(refreshSprite, this, menu_selector(RequestsHubPopup::onRefresh));
-        m_refreshButton->setPosition({295.f, 38.f});
+        m_refreshButton->setPosition({295.f, 32.f});
         m_buttonMenu->addChild(m_refreshButton);
 
         this->retain();
@@ -1043,7 +1063,7 @@ protected:
         if (m_loading) return;
         auto ids = levelIDCSV();
         if (ids.empty()) {
-            showRequestError("There are no Event 0 request levels to open.");
+            showRequestError("There are no request levels to open.");
             return;
         }
 
@@ -1216,14 +1236,14 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
                 menu->removeChild(vanillaModButton, true);
             }
             auto* fakeSprite = CCSprite::createWithSpriteFrameName("GJ_starBtnMod_001.png");
-            fakeSprite->setScale(.95f);
+            fakeSprite->setScale(1.f);
             auto* fakeBtn = CCMenuItemSpriteExtra::create(fakeSprite, this, menu_selector(GDRequestsLevelInfoLayer::onHelperSend));
             fakeBtn->setID("kolorbok.gd-send-logger/helper-send-button");
             menu->addChild(fakeBtn);
         }
 
         auto* rejectSprite = CCSprite::createWithSpriteFrameName("GJ_dislikeBtn_001.png");
-        rejectSprite->setScale(.80f);
+        rejectSprite->setScale(1.f);
         auto* rejectBtn = CCMenuItemSpriteExtra::create(rejectSprite, this, menu_selector(GDRequestsLevelInfoLayer::onRejectRequest));
         rejectBtn->setID("kolorbok.gd-send-logger/request-reject-button");
         menu->addChild(rejectBtn);
@@ -1275,17 +1295,16 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         }
 
         if (!RateStarsLayer::init(levelID, platformer, moderator)) return false;
-        m_fields->helperRequestPopup = helperPopup && captured.active && captured.mode == "helper";
+        m_fields->helperRequestPopup = captured.active && captured.mode == "helper";
         m_fields->requestContext = captured;
 
-        if (m_fields->helperRequestPopup) {
+        if (captured.active && captured.mode == "helper") {
             replaceFirstLabelContaining(this, "SUGGEST STARS", "HELPER: SUGGEST STARS");
         }
 
         if (captured.active) {
-            // Keep a larger feedback icon centered in the bottom-row gap. Find the vanilla
-            // Cancel button by geometry instead of hard-coding a 170px offset that caused
-            // the old icon to collide with the left side of the popup.
+            // Position feedback from the vanilla Cancel button so it stays to its left even
+            // if the send popup layout changes between platforms/builds.
             auto* sprite = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
             sprite->setScale(.34f);
             auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(GDRequestsRateStarsLayer::onRequestFeedback));
@@ -1293,9 +1312,11 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
             button->setSizeMult(1.f);
             if (m_submitButton && m_submitButton->getParent()) {
                 auto* parent = m_submitButton->getParent();
-                float x = m_submitButton->getPositionX() - 92.f;
+                float x = m_submitButton->getPositionX() - 150.f;
                 if (auto* cancel = findBottomRowButtonLeftOf(parent, m_submitButton)) {
-                    x = (cancel->getPositionX() + m_submitButton->getPositionX()) / 2.f;
+                    float cancelHalfWidth = cancel->getContentSize().width * cancel->getScaleX() * .5f;
+                    float feedbackHalfWidth = button->getContentSize().width * button->getScaleX() * .5f;
+                    x = cancel->getPositionX() - cancelHalfWidth - feedbackHalfWidth - 7.f;
                 }
                 button->setPosition({x, m_submitButton->getPositionY()});
                 parent->addChild(button);
