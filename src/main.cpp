@@ -821,8 +821,8 @@ protected:
         m_context = context;
         if (!Popup::init(400.f, 190.f)) return false;
 
-        auto title = context.mode == "helper" ? "HELPER: REJECTION REASON" : "MOD: REJECTION REASON";
-        setTitle(title.c_str(), "bigFont.fnt", context.mode == "helper" ? .50f : .56f, 20.f);
+        char const* title = context.mode == "helper" ? "HELPER: REJECTION REASON" : "MOD: REJECTION REASON";
+        setTitle(title, "bigFont.fnt", context.mode == "helper" ? .50f : .56f, 20.f);
 
         reasonButton("Wrong ID", "wrong_id", {112.f, 118.f});
         reasonButton("Already Seen", "already_seen", {288.f, 118.f});
