@@ -21,9 +21,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cctype>
 #include <cstdlib>
 #include <cmath>
 #include <sstream>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -92,6 +94,8 @@ static bool g_nextBrowserIsRequests = false;
 static bool g_requestBrowserActive = false;
 static LevelBrowserLayer* g_requestBrowser = nullptr;
 static bool g_creatingHelperPopup = false;
+static std::size_t g_requestNativeBatch = 0;
+constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 100;
 
 static std::string gdToStd(gd::string const& value) {
     return std::string(value.c_str());
@@ -104,6 +108,13 @@ static std::string trim(std::string value) {
     while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' || value.back() == '\n')) {
         value.pop_back();
     }
+    return value;
+}
+
+static std::string upperCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
     return value;
 }
 
@@ -333,14 +344,46 @@ static void sendTestRequest() {
 static std::string requestURL() {
     std::string mode = g_client.mode.empty() ? "auto" : g_client.mode;
     if (!g_requestBrowserActive) mode = "auto";
+
+    // Fetch a stable superset and apply the fields present in REQ rows locally.
+    // This is important for Random: the server must not randomize a capped prefix before
+    // the client gets the full matching request set.
     return apiBase() + "/requests?mode=" + mode +
-        "&difficulty=" + g_filters.difficulty +
+        "&difficulty=all" +
         "&type=" + g_filters.levelType +
         "&status=" + g_filters.status +
         "&minSend=" + g_filters.minSend +
-        "&rated=" + g_filters.rated +
-        "&sort=" + g_filters.sort +
+        "&rated=all" +
+        "&sort=newest" +
         "&limit=10000";
+}
+
+static bool requestMetaMatchesLocalFilters(RequestMeta const& meta) {
+    if (meta.event != "0") return false;
+
+    if (g_filters.difficulty != "all") {
+        int wanted = parseInt(g_filters.difficulty);
+        if (wanted > 0 && meta.difficulty != wanted) return false;
+    }
+
+    if (g_filters.rated == "rated" && !meta.rated) return false;
+    if (g_filters.rated == "unrated" && meta.rated) return false;
+    return true;
+}
+
+static void applyLocalRequestOrdering() {
+    if (g_filters.sort == "oldest") {
+        std::stable_sort(g_requestList.begin(), g_requestList.end(), [](auto const& a, auto const& b) {
+            return a.requestID < b.requestID;
+        });
+    } else if (g_filters.sort == "random") {
+        static std::mt19937 rng(std::random_device{}());
+        std::shuffle(g_requestList.begin(), g_requestList.end(), rng);
+    } else {
+        std::stable_sort(g_requestList.begin(), g_requestList.end(), [](auto const& a, auto const& b) {
+            return a.requestID > b.requestID;
+        });
+    }
 }
 
 static bool parseRequestsResponse(std::string const& text) {
@@ -348,6 +391,7 @@ static bool parseRequestsResponse(std::string const& text) {
     std::string line;
     g_requestByLevel.clear();
     g_requestList.clear();
+    g_requestNativeBatch = 0;
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
@@ -374,124 +418,168 @@ static bool parseRequestsResponse(std::string const& text) {
             meta.difficulty = parseInt(parts[4]);
             meta.rated = parseInt(parts[5]) != 0;
 
-            // The in-game Requests browser is intentionally the base request queue only.
-            // Event-specific rows stay Discord-only and must never leak into this list.
-            if (meta.event != "0") continue;
+            if (!requestMetaMatchesLocalFilters(meta)) continue;
 
             if (meta.requestID > 0 && meta.levelID > 0) {
-                // Preserve API order for the in-game requests hub. For duplicate LevelIDs,
-                // keep the first match in the lookup map (the default queue is newest-first).
                 g_requestList.push_back(meta);
-                if (!g_requestByLevel.contains(meta.levelID)) {
-                    g_requestByLevel.emplace(meta.levelID, meta);
-                }
             }
         }
     }
 
+    applyLocalRequestOrdering();
+
+    // Rebuild lookup after ordering so duplicate Level IDs resolve to the request that is
+    // actually shown first for the selected sort mode.
+    for (auto const& meta : g_requestList) {
+        if (!g_requestByLevel.contains(meta.levelID)) g_requestByLevel.emplace(meta.levelID, meta);
+    }
     return gotMeta;
+}
+
+static std::vector<int> requestLevelIDs() {
+    std::vector<int> ids;
+    std::unordered_map<int, bool> seen;
+    ids.reserve(g_requestList.size());
+    for (auto const& meta : g_requestList) {
+        if (meta.levelID <= 0 || meta.event != "0" || seen.contains(meta.levelID)) continue;
+        seen.emplace(meta.levelID, true);
+        ids.push_back(meta.levelID);
+    }
+    return ids;
+}
+
+static std::size_t requestNativeBatchCount() {
+    auto count = requestLevelIDs().size();
+    return count == 0 ? 0 : (count + REQUEST_NATIVE_BATCH_SIZE - 1) / REQUEST_NATIVE_BATCH_SIZE;
+}
+
+static bool hasNextRequestNativeBatch() {
+    auto count = requestNativeBatchCount();
+    return count > 0 && g_requestNativeBatch + 1 < count;
+}
+
+static bool hasPrevRequestNativeBatch() {
+    return g_requestNativeBatch > 0;
+}
+
+static std::string requestNativeBatchCSV(std::size_t batch) {
+    auto ids = requestLevelIDs();
+    if (ids.empty()) return "";
+    auto begin = batch * REQUEST_NATIVE_BATCH_SIZE;
+    if (begin >= ids.size()) return "";
+    auto end = std::min(ids.size(), begin + REQUEST_NATIVE_BATCH_SIZE);
+
+    std::string out;
+    for (std::size_t i = begin; i < end; ++i) {
+        if (!out.empty()) out += ",";
+        out += std::to_string(ids[i]);
+    }
+    return out;
+}
+
+static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
+    auto ids = requestNativeBatchCSV(batch);
+    if (ids.empty()) return nullptr;
+    return GJSearchObject::create(static_cast<SearchType>(19), gd::string(ids.c_str()));
 }
 
 // Requests are loaded by RequestsHubPopup below. Keeping the HTTP request tied to a
 // visible popup gives the user immediate Loading / Connected / Error feedback and avoids
 // capturing a LevelSearchLayer pointer across an asynchronous request.
 
-class FeedbackPopup final : public geode::Popup {
+class FeedbackPopup final : public geode::Popup, public TextInputDelegate {
 protected:
     RequestContext m_context;
-    geode::TextInput* m_input = nullptr;
+    CCTextInputNode* m_input = nullptr;
     TextArea* m_textArea = nullptr;
     CCLabelBMFont* m_counter = nullptr;
+    CCLabelBMFont* m_placeholder = nullptr;
     std::string m_value;
 
-    void refreshTextArea(std::string const& value) {
-        m_value = value;
-        if (m_value.size() > FEEDBACK_LIMIT) m_value.resize(FEEDBACK_LIMIT);
-
-        if (m_textArea) {
-            auto display = m_value.empty() ? std::string("Write feedback...") : m_value;
-            m_textArea->setString(gd::string(display.c_str()));
-            m_textArea->setOpacity(m_value.empty() ? 145 : 255);
+    void refreshCounterAndPlaceholder() {
+        if (m_input) m_value = gdToStd(m_input->getString());
+        if (m_value.size() > FEEDBACK_LIMIT) {
+            m_value.resize(FEEDBACK_LIMIT);
+            if (m_input) m_input->setString(gd::string(m_value.c_str()));
         }
         if (m_counter) {
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
+        if (m_textArea) m_textArea->setString(gd::string(m_value.c_str()));
+        if (m_placeholder) m_placeholder->setVisible(m_value.empty());
+    }
+
+    void textChanged(CCTextInputNode* node) override {
+        if (node != m_input) return;
+        refreshCounterAndPlaceholder();
     }
 
     bool initFor(RequestContext const& context) {
         m_context = context;
         m_value = feedbackFor(context);
-        if (!Popup::init(390.f, 245.f)) return false;
+        if (!Popup::init(340.f, 210.f)) return false;
         setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
 
-        // Keep the real GD/Geode input focused for keyboard/IME handling, but render its
-        // value through a TextArea so the editor itself behaves visually like a multiline box.
-        m_input = geode::TextInput::create(328.f, "", "chatFont.fnt");
-        if (!m_input) return false;
-        m_input->setPosition({195.f, 139.f});
-        m_input->setTextAlign(geode::TextInputAlign::Left);
-        m_input->setCommonFilter(geode::CommonFilter::Any);
-        m_input->setMaxCharCount(FEEDBACK_LIMIT);
-        m_input->setString(gd::string(m_value.c_str()));
-        if (auto* bg = m_input->getBGSprite()) {
-            bg->setContentSize({328.f, 132.f});
-        }
-        if (auto* node = m_input->getInputNode()) {
-            if (auto* label = node->getTextLabel()) label->setVisible(false);
-            if (node->m_cursor) node->m_cursor->setVisible(false);
-        }
-        m_mainLayer->addChild(m_input);
+        auto* box = CCLayerColor::create(ccc4(110, 61, 34, 255), 246.f, 88.f);
+        box->setOpacity(165);
+        box->setPosition({47.f, 91.f});
+        m_mainLayer->addChild(box);
 
-        auto initialText = m_value.empty() ? std::string("Write feedback...") : m_value;
         m_textArea = TextArea::create(
-            gd::string(initialText.c_str()),
+            gd::string(m_value.c_str()),
             "chatFont.fnt",
-            .54f,
-            306.f,
+            .58f,
+            226.f,
             {0.f, 1.f},
             18.f,
             true
         );
-        if (m_textArea) {
-            m_textArea->setPosition({42.f, 190.f});
-            m_mainLayer->addChild(m_textArea, 2);
-            if (auto* node = m_input->getInputNode()) node->addTextArea(m_textArea);
-        }
+        if (!m_textArea) return false;
+        m_textArea->setPosition({57.f, 168.f});
+        m_mainLayer->addChild(m_textArea, 2);
 
-        // Transparent hit area: tapping anywhere in the large feedback box focuses the
-        // underlying text input instead of forcing the user to hit a one-line field.
-        auto* focusArea = CCLayerColor::create(ccc4(0, 0, 0, 0), 328.f, 132.f);
-        auto* focusBtn = CCMenuItemSpriteExtra::create(focusArea, this, menu_selector(FeedbackPopup::onFocus));
-        focusBtn->setPosition({195.f, 139.f});
-        focusBtn->setSizeMult(1.f);
-        m_buttonMenu->addChild(focusBtn, 1);
+        // CCTextInputNode has native TextArea support. Using it is the important part here:
+        // the IME/cursor and the visible text now share the same wrapped text area instead of
+        // a hidden one-line Geode TextInput whose cursor could run across the whole popup.
+        m_input = CCTextInputNode::create(246.f, 88.f, "", "chatFont.fnt");
+        if (!m_input) return false;
+        m_input->setPosition({170.f, 135.f});
+        m_input->setContentSize({246.f, 88.f});
+        m_input->setDelegate(this);
+        m_input->setAllowedChars(gd::string(geode::getCommonFilterAllowedChars(geode::CommonFilter::Any)));
+        m_input->setMaxLabelLength(static_cast<int>(FEEDBACK_LIMIT));
+        m_input->setMaxLabelWidth(226.f);
+        m_input->addTextArea(m_textArea);
+        m_input->setString(gd::string(m_value.c_str()));
+        if (auto* label = m_input->getTextLabel()) label->setVisible(false);
+        m_mainLayer->addChild(m_input, 3);
+
+        m_placeholder = CCLabelBMFont::create("WRITE FEEDBACK...", "chatFont.fnt");
+        m_placeholder->setScale(.48f);
+        m_placeholder->setOpacity(145);
+        m_placeholder->setAnchorPoint({0.f, .5f});
+        m_placeholder->setPosition({58.f, 163.f});
+        m_mainLayer->addChild(m_placeholder, 4);
 
         m_counter = CCLabelBMFont::create("0/1500", "goldFont.fnt");
         m_counter->setScale(.27f);
         m_counter->setAnchorPoint({1.f, .5f});
-        m_counter->setPosition({354.f, 62.f});
+        m_counter->setPosition({307.f, 49.f});
         m_mainLayer->addChild(m_counter);
 
-        auto* cancelSpr = ButtonSprite::create("Cancel", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .58f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(FeedbackPopup::onCancel));
-        cancelBtn->setPosition({135.f, 35.f});
+        cancelBtn->setPosition({118.f, 27.f});
         m_buttonMenu->addChild(cancelBtn);
 
-        auto* saveSpr = ButtonSprite::create("Save", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .60f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .58f);
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(FeedbackPopup::onSave));
-        saveBtn->setPosition({255.f, 35.f});
+        saveBtn->setPosition({222.f, 27.f});
         m_buttonMenu->addChild(saveBtn);
 
-        m_input->setCallback([this](std::string const& value) {
-            this->refreshTextArea(value);
-        });
-        refreshTextArea(m_value);
+        refreshCounterAndPlaceholder();
         return true;
-    }
-
-    void onFocus(CCObject*) {
-        if (m_input) m_input->focus();
     }
 
     void onCancel(CCObject*) { onClose(nullptr); }
@@ -501,9 +589,8 @@ protected:
             onClose(nullptr);
             return;
         }
-        auto value = m_input ? gdToStd(m_input->getString()) : m_value;
-        if (value.size() > FEEDBACK_LIMIT) value.resize(FEEDBACK_LIMIT);
-        g_feedbackDrafts[m_context.request.requestID] = value;
+        refreshCounterAndPlaceholder();
+        g_feedbackDrafts[m_context.request.requestID] = m_value;
         onClose(nullptr);
     }
 
@@ -781,6 +868,7 @@ protected:
     RequestContext m_context;
     std::string m_reason;
     std::vector<ReasonChoice> m_reasonButtons;
+    CCMenuItemSpriteExtra* m_submitButton = nullptr;
 
     static ButtonSprite* makeReasonSprite(std::string const& label, bool selected) {
         return ButtonSprite::create(
@@ -802,6 +890,23 @@ protected:
                 choice.button->setSizeMult(1.f);
             }
         }
+
+        if (m_submitButton) {
+            bool enabled = !m_reason.empty();
+            auto* sprite = ButtonSprite::create(
+                "SUBMIT",
+                86,
+                true,
+                "goldFont.fnt",
+                "GJ_button_01.png",
+                30.f,
+                .68f
+            );
+            if (!enabled) sprite->setColor(ccc3(120, 120, 120));
+            m_submitButton->setSprite(sprite);
+            m_submitButton->setEnabled(enabled);
+            m_submitButton->setSizeMult(1.f);
+        }
     }
 
     CCMenuItemSpriteExtra* reasonButton(char const* label, std::string reason, CCPoint pos) {
@@ -822,31 +927,29 @@ protected:
         if (!Popup::init(400.f, 190.f)) return false;
 
         char const* title = context.mode == "helper" ? "HELPER: REJECTION REASON" : "MOD: REJECTION REASON";
-        setTitle(title, "bigFont.fnt", context.mode == "helper" ? .50f : .56f, 20.f);
+        setTitle(title, "bigFont.fnt", context.mode == "helper" ? .58f : .68f, 20.f);
 
-        reasonButton("Wrong ID", "wrong_id", {112.f, 118.f});
-        reasonButton("Already Seen", "already_seen", {288.f, 118.f});
-        reasonButton("Already Rated", "already_rated", {112.f, 78.f});
-        reasonButton("Report", "report", {288.f, 78.f});
+        reasonButton("NOT SENT", "not_sent", {112.f, 118.f});
+        reasonButton("ALREADY SEEN", "already_seen", {288.f, 118.f});
+        reasonButton("ALREADY RATED", "already_rated", {112.f, 78.f});
+        reasonButton("REPORT", "report", {288.f, 78.f});
 
-        auto* cancelSpr = ButtonSprite::create("Cancel", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 86, true, "goldFont.fnt", "GJ_button_01.png", 30.f, .68f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(RejectPopup::onCancel));
-        cancelBtn->setPosition({205.f, 30.f});
+        cancelBtn->setPosition({138.f, 30.f});
         m_buttonMenu->addChild(cancelBtn);
 
-        auto* submitSpr = ButtonSprite::create("Submit", 80, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .60f);
-        auto* submitBtn = CCMenuItemSpriteExtra::create(submitSpr, this, menu_selector(RejectPopup::onSubmit));
-        submitBtn->setPosition({310.f, 30.f});
-        m_buttonMenu->addChild(submitBtn);
+        auto* submitSpr = ButtonSprite::create("SUBMIT", 86, true, "goldFont.fnt", "GJ_button_01.png", 30.f, .68f);
+        m_submitButton = CCMenuItemSpriteExtra::create(submitSpr, this, menu_selector(RejectPopup::onSubmit));
+        m_submitButton->setPosition({262.f, 30.f});
+        m_buttonMenu->addChild(m_submitButton);
 
         auto* feedbackSpr = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
         feedbackSpr->setScale(.32f);
         auto* feedbackBtn = CCMenuItemSpriteExtra::create(feedbackSpr, this, menu_selector(RejectPopup::onFeedback));
         feedbackBtn->setID("kolorbok.gd-send-logger/request-feedback-button");
         feedbackBtn->setSizeMult(1.f);
-        float cancelHalfWidth = cancelBtn->getContentSize().width * cancelBtn->getScaleX() * .5f;
-        float feedbackHalfWidth = feedbackBtn->getContentSize().width * feedbackBtn->getScaleX() * .5f;
-        feedbackBtn->setPosition({cancelBtn->getPositionX() - cancelHalfWidth - feedbackHalfWidth - 8.f, cancelBtn->getPositionY()});
+        feedbackBtn->setPosition({cancelBtn->getPositionX() - 78.f, cancelBtn->getPositionY()});
         m_buttonMenu->addChild(feedbackBtn);
 
         updateButtons();
@@ -865,10 +968,7 @@ protected:
     void onFeedback(CCObject*) { openFeedbackEditor(m_context); }
     void onCancel(CCObject*) { onClose(nullptr); }
     void onSubmit(CCObject*) {
-        if (m_reason.empty()) {
-            showAlert(MOD_NAME, "Choose a rejection reason first.");
-            return;
-        }
+        if (m_reason.empty()) return;
         auto context = m_context;
         auto reason = m_reason;
         onClose(nullptr);
@@ -918,18 +1018,6 @@ protected:
         return value.substr(0, 6) + "..." + value.substr(value.size() - 4);
     }
 
-    static std::string levelIDCSV() {
-        std::string out;
-        std::unordered_map<int, bool> seen;
-        for (auto const& meta : g_requestList) {
-            if (meta.levelID <= 0 || meta.event != "0" || seen.contains(meta.levelID)) continue;
-            seen.emplace(meta.levelID, true);
-            if (!out.empty()) out += ",";
-            out += std::to_string(meta.levelID);
-        }
-        return out;
-    }
-
     void setStatus(std::string const& text) {
         if (m_statusLabel) m_statusLabel->setString(text.c_str());
     }
@@ -941,8 +1029,7 @@ protected:
     }
 
     void applyLoadedState() {
-        auto loadedCount = static_cast<int>(g_requestList.size());
-        auto foundCount = g_client.total > 0 ? g_client.total : loadedCount;
+        auto foundCount = static_cast<int>(requestLevelIDs().size());
         auto meta = "CONNECTED  |  " + modeLabel() + "  |  " +
             std::to_string(foundCount) + " FOUND";
         setStatus(meta);
@@ -1061,15 +1148,16 @@ protected:
 
     void onOpenLevels(CCObject*) {
         if (m_loading) return;
-        auto ids = levelIDCSV();
-        if (ids.empty()) {
+        if (requestLevelIDs().empty()) {
             showRequestError("There are no request levels to open.");
             return;
         }
 
-        // GD search type 19 is the native comma-separated level-list search with pagination.
-        // Using it gives us actual LevelCell rows instead of homemade text buttons.
-        auto* search = GJSearchObject::create(static_cast<SearchType>(19), gd::string(ids.c_str()));
+        // Geometry Dash's comma-separated native search effectively tops out around one
+        // 100-ID query. Keep native LevelCell rendering, but page the full request set in
+        // 100-ID batches and bridge the native arrows between batches below.
+        g_requestNativeBatch = 0;
+        auto* search = makeRequestNativeBatchSearch(g_requestNativeBatch);
         if (!search) {
             showRequestError("Could not create the Geometry Dash request level list.");
             return;
@@ -1155,20 +1243,83 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
 };
 
 class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
+    struct Fields {
+        bool requestBrowser = false;
+        bool nativeAtEnd = false;
+        bool nativeAtStart = true;
+    };
+
+    bool isThisRequestBrowser() {
+        return m_fields->requestBrowser && g_requestBrowserActive && g_requestBrowser == this;
+    }
+
+    void refreshRequestBatchArrows() {
+        if (!isThisRequestBrowser()) return;
+
+        // Capture vanilla page-boundary state before exposing an arrow for the adjacent
+        // request batch. This lets normal GD pagination continue inside each 100-ID batch.
+        m_fields->nativeAtEnd = !m_rightArrow || !m_rightArrow->isVisible();
+        m_fields->nativeAtStart = !m_leftArrow || !m_leftArrow->isVisible();
+
+        if (m_fields->nativeAtEnd && hasNextRequestNativeBatch() && m_rightArrow) {
+            m_rightArrow->setVisible(true);
+        }
+        if (m_fields->nativeAtStart && hasPrevRequestNativeBatch() && m_leftArrow) {
+            m_leftArrow->setVisible(true);
+        }
+    }
+
+    void loadRequestNativeBatch(std::size_t batch) {
+        auto count = requestNativeBatchCount();
+        if (count == 0 || batch >= count) return;
+        auto* search = makeRequestNativeBatchSearch(batch);
+        if (!search) return;
+
+        g_requestNativeBatch = batch;
+        m_fields->nativeAtEnd = false;
+        m_fields->nativeAtStart = true;
+        setSearchObject(search);
+        loadPage(search);
+    }
+
     bool init(GJSearchObject* searchObj) {
+        bool openingRequests = g_nextBrowserIsRequests;
         if (!LevelBrowserLayer::init(searchObj)) return false;
         NodeIDs::provideFor(this);
 
-        if (g_nextBrowserIsRequests) {
+        if (openingRequests) {
             g_nextBrowserIsRequests = false;
             g_requestBrowserActive = true;
             g_requestBrowser = this;
+            m_fields->requestBrowser = true;
+            g_requestNativeBatch = 0;
         }
         return true;
     }
 
+    void loadLevelsFinished(CCArray* levels, char const* key, int type) override {
+        LevelBrowserLayer::loadLevelsFinished(levels, key, type);
+        if (isThisRequestBrowser()) refreshRequestBatchArrows();
+    }
+
+    void onNextPage(CCObject* sender) {
+        if (isThisRequestBrowser() && m_fields->nativeAtEnd && hasNextRequestNativeBatch()) {
+            loadRequestNativeBatch(g_requestNativeBatch + 1);
+            return;
+        }
+        LevelBrowserLayer::onNextPage(sender);
+    }
+
+    void onPrevPage(CCObject* sender) {
+        if (isThisRequestBrowser() && m_fields->nativeAtStart && hasPrevRequestNativeBatch()) {
+            loadRequestNativeBatch(g_requestNativeBatch - 1);
+            return;
+        }
+        LevelBrowserLayer::onPrevPage(sender);
+    }
+
     gd::string getSearchTitle() {
-        if (g_requestBrowserActive && g_requestBrowser == this) {
+        if (isThisRequestBrowser()) {
             if (g_hasSelectedRequest && g_selectedRequest.requestID > 0) {
                 auto title = "Request #" + std::to_string(g_selectedRequest.requestID);
                 return gd::string(title.c_str());
@@ -1179,13 +1330,11 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     }
 
     void onBack(CCObject* sender) {
-        bool wasRequestBrowser = g_requestBrowserActive && g_requestBrowser == this;
+        bool wasRequestBrowser = isThisRequestBrowser();
         if (wasRequestBrowser) {
-            // The Server Requests hub is still on the previous scene. Clear only the
-            // transient context for the opened request; keep its loaded rows and client META
-            // so Back returns to the same usable hub instead of an emptied window.
             g_requestBrowserActive = false;
             g_requestBrowser = nullptr;
+            g_requestNativeBatch = 0;
             g_hasSelectedRequest = false;
             g_selectedRequest = RequestMeta{};
             g_context = RequestContext{};
@@ -1286,6 +1435,11 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         }
     }
 
+    void refreshHelperRequestTitle() {
+        if (!m_fields->helperRequestPopup) return;
+        replaceFirstLabelContaining(this, "SUGGEST STARS", "HELPER: SUGGEST STARS");
+    }
+
     bool init(int levelID, bool platformer, bool moderator) {
         bool helperPopup = g_creatingHelperPopup;
         RequestContext captured;
@@ -1299,7 +1453,17 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         m_fields->requestContext = captured;
 
         if (captured.active && captured.mode == "helper") {
-            replaceFirstLabelContaining(this, "SUGGEST STARS", "HELPER: SUGGEST STARS");
+            refreshHelperRequestTitle();
+            // Some UI/fake-mod code can touch the vanilla title after init. Re-apply on two
+            // following main-thread turns so HELPER wins after those late mutations as well.
+            this->retain();
+            geode::queueInMainThread([self = this]() {
+                if (self->getParent()) self->refreshHelperRequestTitle();
+                geode::queueInMainThread([self]() {
+                    if (self->getParent()) self->refreshHelperRequestTitle();
+                    self->release();
+                });
+            });
         }
 
         if (captured.active) {
@@ -1314,9 +1478,7 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
                 auto* parent = m_submitButton->getParent();
                 float x = m_submitButton->getPositionX() - 150.f;
                 if (auto* cancel = findBottomRowButtonLeftOf(parent, m_submitButton)) {
-                    float cancelHalfWidth = cancel->getContentSize().width * cancel->getScaleX() * .5f;
-                    float feedbackHalfWidth = button->getContentSize().width * button->getScaleX() * .5f;
-                    x = cancel->getPositionX() - cancelHalfWidth - feedbackHalfWidth - 7.f;
+                    x = cancel->getPositionX() - 78.f;
                 }
                 button->setPosition({x, m_submitButton->getPositionY()});
                 parent->addChild(button);
