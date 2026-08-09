@@ -142,7 +142,7 @@ static std::string limitPopupText(std::string value, std::size_t limit = 700) {
 
 static void showAlert(std::string const& title, std::string const& message) {
     FLAlertLayer::create(
-        gd::string(title.c_str()),
+        title.c_str(),
         gd::string(limitPopupText(message).c_str()),
         "OK"
     )->show();
@@ -954,7 +954,7 @@ class $modify(GDRequestsMenuLayerProbe, MenuLayer) {
         menu->setZOrder(100000);
 
         auto* sprite = ButtonSprite::create(
-            "REQ 2.0.3", 115, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f
+            "REQ 2.0.4", 115, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .60f
         );
         if (!sprite) return true;
 
