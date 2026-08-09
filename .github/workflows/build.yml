@@ -49,7 +49,7 @@ jobs:
 
           url = os.environ.get("SEND_API_URL", "").strip()
           if not url:
-              raise SystemExit("Repository variable SEND_API_URL is missing. Set it to your bot endpoint, e.g. http://127.0.0.1:8765/api/v1/gd-send")
+              raise SystemExit("Repository variable SEND_API_URL is missing. Set it to your bot endpoint, e.g. https://example.com/api/v1/gd-send")
 
           Path("src/api_url.hpp").write_text(
               '#pragma once\n\ninline constexpr char SEND_API_URL[] = "' + url.replace('\\', '\\\\').replace('"', '\\"') + '";\n',
@@ -76,5 +76,5 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: GD-Send-Logger-Universal
+          name: GD-Requests-Universal
           path: ${{ steps.build.outputs.build-output }}
