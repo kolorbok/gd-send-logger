@@ -524,26 +524,17 @@ static bool replaceFirstLabelContaining(CCNode* root, std::string const& needle,
         }
     }
 
-    auto* children = root->getChildren();
-    if (!children) return false;
-    CCObject* object = nullptr;
-    CCARRAY_FOREACH(children, object) {
-        if (auto* child = typeinfo_cast<CCNode*>(object)) {
-            if (replaceFirstLabelContaining(child, needle, replacement)) return true;
-        }
+    for (CCNode* child : root->getChildrenExt()) {
+        if (replaceFirstLabelContaining(child, needle, replacement)) return true;
     }
     return false;
 }
 
 static CCMenuItemSpriteExtra* findBottomRowButtonLeftOf(CCNode* parent, CCMenuItemSpriteExtra* submit) {
     if (!parent || !submit) return nullptr;
-    auto* children = parent->getChildren();
-    if (!children) return nullptr;
-
     CCMenuItemSpriteExtra* best = nullptr;
-    CCObject* object = nullptr;
-    CCARRAY_FOREACH(children, object) {
-        auto* button = typeinfo_cast<CCMenuItemSpriteExtra*>(object);
+    for (CCNode* child : parent->getChildrenExt()) {
+        auto* button = typeinfo_cast<CCMenuItemSpriteExtra*>(child);
         if (!button || button == submit || !button->isVisible()) continue;
         if (std::abs(button->getPositionY() - submit->getPositionY()) > 8.f) continue;
         if (button->getPositionX() >= submit->getPositionX()) continue;
