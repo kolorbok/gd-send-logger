@@ -8,8 +8,8 @@
 #include <Geode/binding/GJSearchObject.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
-#include <Geode/binding/TextArea.hpp>
 #include <Geode/ui/TextInput.hpp>
+#include <Geode/ui/TextArea.hpp>
 #include <Geode/loader/SettingV3.hpp>
 #include <Geode/loader/Loader.hpp>
 #include <Geode/utils/web.hpp>
@@ -507,46 +507,71 @@ class FeedbackPopup final : public geode::Popup {
 protected:
     RequestContext m_context;
     geode::TextInput* m_input = nullptr;
-    TextArea* m_textArea = nullptr;
+    geode::SimpleTextArea* m_textArea = nullptr;
     CCLabelBMFont* m_counter = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
     CCMenuItemSpriteExtra* m_focusTarget = nullptr;
     std::string m_value;
 
-    void refreshText() {
-        if (m_input) m_value = gdToStd(m_input->getString());
-        if (m_value.size() > FEEDBACK_LIMIT) {
-            m_value.resize(FEEDBACK_LIMIT);
-            if (m_input) m_input->setString(gd::string(m_value.c_str()), false);
-        }
+    static constexpr float FIELD_W = 250.f;
+    static constexpr float FIELD_H = 94.f;
+    static constexpr float FIELD_X = 45.f;
+    static constexpr float FIELD_Y = 66.f;
+    static constexpr float FIELD_CENTER_X = 170.f;
+    static constexpr std::size_t VISIBLE_TAIL_CHARS = 260;
+
+    std::string visibleText() const {
+        if (m_value.size() <= VISIBLE_TAIL_CHARS) return m_value;
+        // The hidden native input is still the source of truth. For very long feedback,
+        // keep the part currently being edited visible instead of showing the first lines
+        // forever. SimpleTextArea then wraps this tail inside the editor box.
+        return "..." + m_value.substr(m_value.size() - (VISIBLE_TAIL_CHARS - 3));
+    }
+
+    void layoutVisibleText() {
+        if (!m_textArea) return;
+        auto height = std::max(m_textArea->getHeight(), m_textArea->getLineHeight());
+        // SimpleTextArea is center-anchored. Reposition it after every reflow so its first
+        // line stays pinned to the top-left of the brown editor box as line count changes.
+        m_textArea->setPosition({
+            FIELD_CENTER_X,
+            FIELD_Y + FIELD_H - 9.f - height / 2.f
+        });
+    }
+
+    void refreshVisuals() {
         if (m_counter) {
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
         if (m_textArea) {
-            m_textArea->setString(gd::string(m_value.c_str()));
-            // TextArea rebuilds its multiline glyphs on setString(). Make those glyphs
-            // immediately visible; otherwise newly typed characters can stay hidden while
-            // the real single-line input continues receiving text behind the field.
-            m_textArea->colorAllLabels(ccc3(255, 255, 255));
-            m_textArea->setOpacity(255);
-            m_textArea->showAll();
+            m_textArea->setText(visibleText());
+            m_textArea->setColor(ccc4(255, 255, 255, 255));
+            layoutVisibleText();
         }
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
     }
 
-    void refreshTextDeferred(float) {
-        // CCTextInputNode may finish its own label/TextArea update after the wrapper callback.
-        // Re-apply the visible multiline state on the next frame so typed glyphs cannot be
-        // hidden again by the native single-line update path.
-        refreshText();
+    void setValueFromInput(std::string const& value) {
+        m_value = value;
+        if (m_value.size() > FEEDBACK_LIMIT) {
+            m_value.resize(FEEDBACK_LIMIT);
+            if (m_input && gdToStd(m_input->getString()) != m_value) {
+                m_input->setString(gd::string(m_value.c_str()), false);
+            }
+        }
+        refreshVisuals();
+    }
+
+    void syncValueFromInput() {
+        if (!m_input) return;
+        setValueFromInput(gdToStd(m_input->getString()));
     }
 
     void focusInput() {
         if (!m_input) return;
-        // Use Geode's public focus() path instead of manually attaching the inner
-        // CCTextFieldTTF. The wrapper keeps CCTextInputNode's selected/IME state in sync
-        // across desktop and mobile, while the attached TextArea handles visual wrapping.
+        // TextInput is intentionally positioned off-screen: it exists only to own the
+        // platform IME and text buffer. The visible editor is SimpleTextArea below.
         m_input->focus();
     }
 
@@ -556,73 +581,59 @@ protected:
         if (!Popup::init(340.f, 205.f)) return false;
         setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
 
-        constexpr float fieldW = 250.f;
-        constexpr float fieldH = 94.f;
-        constexpr float popupW = 340.f;
-        constexpr float fieldX = (popupW - fieldW) / 2.f;
-        constexpr float fieldY = 66.f;
-        constexpr float fieldCenterX = popupW / 2.f;
-
-        auto* box = CCLayerColor::create(ccc4(110, 61, 34, 255), fieldW, fieldH);
+        auto* box = CCLayerColor::create(ccc4(110, 61, 34, 255), FIELD_W, FIELD_H);
         box->setOpacity(165);
-        box->setPosition({fieldX, fieldY});
+        box->setPosition({FIELD_X, FIELD_Y});
         m_mainLayer->addChild(box, 1);
 
-        m_textArea = TextArea::create(
-            gd::string(m_value.c_str()),
+        // Geode's SimpleTextArea is purpose-built for dynamic multiline bitmap text. It
+        // performs real width-based reflow; CUTOFF_WRAP guarantees even a single very long
+        // word cannot escape the field. We do NOT attach it to CCTextInputNode: that native
+        // coupling kept forcing the renderer back into the one-line input path on Android.
+        m_textArea = geode::SimpleTextArea::create(
+            visibleText(),
             "chatFont.fnt",
             .58f,
-            fieldW - 20.f,
-            {0.f, 1.f},
-            18.f,
-            true
+            FIELD_W - 20.f
         );
         if (!m_textArea) return false;
-        m_textArea->setPosition({fieldX + 10.f, fieldY + fieldH - 10.f});
-        m_textArea->setIgnoreColorCode(true);
-        m_textArea->colorAllLabels(ccc3(255, 255, 255));
-        m_textArea->showAll();
-        // Draw the wrapped text above the invisible input renderer. The input node is kept
-        // only for IME/cursor ownership; TextArea is the actual visible editor surface.
+        m_textArea->setAlignment(kCCTextAlignmentLeft);
+        m_textArea->setWrappingMode(geode::CUTOFF_WRAP);
+        m_textArea->setLinePadding(1.5f);
+        m_textArea->setMaxLines(8);
+        m_textArea->setColor(ccc4(255, 255, 255, 255));
+        layoutVisibleText();
         m_mainLayer->addChild(m_textArea, 5);
 
-        // Geode TextInput provides a reliable public focus() API. Keep its own renderer
-        // invisible and attach our TextArea to the underlying CCTextInputNode: GD then
-        // forwards typed text into the wrapped multiline renderer instead of drawing a
-        // one-line cursor across the popup.
-        m_input = geode::TextInput::create(fieldW, "", "chatFont.fnt");
+        // Geometry Dash / Geode only expose a single-line editable input. Use it solely as
+        // the IME-backed buffer and mirror its callback value into SimpleTextArea. Moving it
+        // off-screen also prevents the native one-line label/cursor from ever leaking into
+        // the popup while keeping focus()/keyboard handling intact.
+        m_input = geode::TextInput::create(FIELD_W, "", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({fieldCenterX, fieldY + fieldH / 2.f});
-        m_input->setContentSize({fieldW, fieldH});
+        m_input->setPosition({-1000.f, -1000.f});
         m_input->hideBG();
         m_input->setTextAlign(geode::TextInputAlign::Left);
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
         m_input->setString(gd::string(m_value.c_str()), false);
-        m_input->setCallback([this](std::string const&) {
-            this->refreshText();
-            this->scheduleOnce(schedule_selector(FeedbackPopup::refreshTextDeferred), 0.f);
+        m_input->setCallback([this](std::string const& value) {
+            this->setValueFromInput(value);
         });
-        if (auto* node = m_input->getInputNode()) {
-            node->setMaxLabelWidth(fieldW - 20.f);
-            node->addTextArea(m_textArea);
-            if (auto* label = node->getTextLabel()) label->setVisible(false);
-            if (node->m_cursor) node->m_cursor->setVisible(false);
-        }
-        m_mainLayer->addChild(m_input, 3);
+        m_mainLayer->addChild(m_input, 0);
 
         m_placeholder = CCLabelBMFont::create("WRITE FEEDBACK...", "chatFont.fnt");
         m_placeholder->setScale(.48f);
         m_placeholder->setOpacity(145);
         m_placeholder->setAnchorPoint({0.f, .5f});
-        m_placeholder->setPosition({fieldX + 10.f, fieldY + fieldH - 17.f});
-        m_mainLayer->addChild(m_placeholder, 4);
+        m_placeholder->setPosition({FIELD_X + 10.f, FIELD_Y + FIELD_H - 17.f});
+        m_mainLayer->addChild(m_placeholder, 6);
 
-        // Transparent menu item covering the full box. This is what makes every point of
-        // the multiline-looking field focus the native IME reliably on desktop/mobile.
-        auto* focusNode = CCLayerColor::create(ccc4(0, 0, 0, 0), fieldW, fieldH);
+        // A transparent full-field hit target focuses the off-screen native input. This is
+        // more reliable than making the single-line TextInput itself fill the fake textarea.
+        auto* focusNode = CCLayerColor::create(ccc4(0, 0, 0, 0), FIELD_W, FIELD_H);
         m_focusTarget = CCMenuItemSpriteExtra::create(focusNode, this, menu_selector(FeedbackPopup::onFocus));
-        m_focusTarget->setPosition({fieldCenterX, fieldY + fieldH / 2.f});
+        m_focusTarget->setPosition({FIELD_CENTER_X, FIELD_Y + FIELD_H / 2.f});
         m_focusTarget->setSizeMult(1.f);
         m_buttonMenu->addChild(m_focusTarget, 20);
 
@@ -642,7 +653,7 @@ protected:
         saveBtn->setPosition({222.f, 25.f});
         m_buttonMenu->addChild(saveBtn);
 
-        refreshText();
+        refreshVisuals();
         return true;
     }
 
@@ -654,7 +665,7 @@ protected:
             onClose(nullptr);
             return;
         }
-        refreshText();
+        syncValueFromInput();
         g_feedbackDrafts[m_context.request.requestID] = m_value;
         onClose(nullptr);
     }
