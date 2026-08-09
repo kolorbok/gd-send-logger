@@ -523,8 +523,23 @@ protected:
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
-        if (m_textArea) m_textArea->setString(gd::string(m_value.c_str()));
+        if (m_textArea) {
+            m_textArea->setString(gd::string(m_value.c_str()));
+            // TextArea rebuilds its multiline glyphs on setString(). Make those glyphs
+            // immediately visible; otherwise newly typed characters can stay hidden while
+            // the real single-line input continues receiving text behind the field.
+            m_textArea->colorAllLabels(ccc3(255, 255, 255));
+            m_textArea->setOpacity(255);
+            m_textArea->showAll();
+        }
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
+    }
+
+    void refreshTextDeferred(float) {
+        // CCTextInputNode may finish its own label/TextArea update after the wrapper callback.
+        // Re-apply the visible multiline state on the next frame so typed glyphs cannot be
+        // hidden again by the native single-line update path.
+        refreshText();
     }
 
     void focusInput() {
@@ -564,7 +579,12 @@ protected:
         );
         if (!m_textArea) return false;
         m_textArea->setPosition({fieldX + 10.f, fieldY + fieldH - 10.f});
-        m_mainLayer->addChild(m_textArea, 2);
+        m_textArea->setIgnoreColorCode(true);
+        m_textArea->colorAllLabels(ccc3(255, 255, 255));
+        m_textArea->showAll();
+        // Draw the wrapped text above the invisible input renderer. The input node is kept
+        // only for IME/cursor ownership; TextArea is the actual visible editor surface.
+        m_mainLayer->addChild(m_textArea, 5);
 
         // Geode TextInput provides a reliable public focus() API. Keep its own renderer
         // invisible and attach our TextArea to the underlying CCTextInputNode: GD then
@@ -579,7 +599,10 @@ protected:
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
         m_input->setString(gd::string(m_value.c_str()), false);
-        m_input->setCallback([this](std::string const&) { this->refreshText(); });
+        m_input->setCallback([this](std::string const&) {
+            this->refreshText();
+            this->scheduleOnce(schedule_selector(FeedbackPopup::refreshTextDeferred), 0.f);
+        });
         if (auto* node = m_input->getInputNode()) {
             node->setMaxLabelWidth(fieldW - 20.f);
             node->addTextArea(m_textArea);
@@ -1065,10 +1088,15 @@ protected:
         updateButtons();
     }
 
+    void syncNoPingState(float) {
+        // CCMenuItemToggler changes its own state as part of activate(). Read that final
+        // state on the next scheduler tick instead of toggling it a second time here.
+        if (!m_noPingToggle) return;
+        setNoPingFor(m_context, m_noPingToggle->isToggled());
+    }
+
     void onNoPing(CCObject*) {
-        bool next = !noPingFor(m_context);
-        setNoPingFor(m_context, next);
-        if (m_noPingToggle) m_noPingToggle->toggle(next);
+        this->scheduleOnce(schedule_selector(RejectPopup::syncNoPingState), 0.f);
     }
 
     void onFeedback(CCObject*) { openFeedbackEditor(m_context); }
@@ -1680,11 +1708,14 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         if (m_fields->requestContext.active) openFeedbackEditor(m_fields->requestContext);
     }
 
+    void syncRequestNoPingState(float) {
+        if (!m_fields->requestContext.active || !m_fields->noPingToggle) return;
+        setNoPingFor(m_fields->requestContext, m_fields->noPingToggle->isToggled());
+    }
+
     void onRequestNoPing(CCObject*) {
         if (!m_fields->requestContext.active) return;
-        bool next = !noPingFor(m_fields->requestContext);
-        setNoPingFor(m_fields->requestContext, next);
-        if (m_fields->noPingToggle) m_fields->noPingToggle->toggle(next);
+        this->scheduleOnce(schedule_selector(GDRequestsRateStarsLayer::syncRequestNoPingState), 0.f);
     }
 
     void onRate(CCObject* sender) {
