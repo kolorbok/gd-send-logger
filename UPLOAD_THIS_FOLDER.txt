@@ -2,9 +2,12 @@ THIS IS THE MOD REPOSITORY ROOT.
 
 Upload/push the CONTENTS of this folder to github.com/kolorbok/gd-send-logger.
 Expected checks before pushing:
-- mod.json version = v2.0.14
+- mod.json version = v2.0.15
 - src/main.cpp contains: FEEDBACK_LIMIT = 500
+- src/main.cpp contains: std::vector<std::string> difficulties
 - src/main.cpp contains: class DifficultyPickerPopup
-- src/main.cpp contains: EXTREME DEMON
+- src/main.cpp contains: difficulty_10_btn_001.png
+- src/main.cpp does NOT contain: SimpleTextArea::create
 
-Do not upload the parent bot patch into the Geode repository.
+The bot-side v2.0.14 bridge patch is still required for exact demon subtype keys.
+Do not upload the bot patch into the Geode repository.

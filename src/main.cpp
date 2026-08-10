@@ -9,7 +9,6 @@
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
 #include <Geode/ui/TextInput.hpp>
-#include <Geode/ui/TextArea.hpp>
 #include <Geode/loader/SettingV3.hpp>
 #include <Geode/loader/Loader.hpp>
 #include <Geode/utils/web.hpp>
@@ -49,7 +48,8 @@ struct SendSnapshot {
 };
 
 struct RequestFilters {
-    std::string difficulty = "all";
+    // Empty = any difficulty. Otherwise every key in this vector is accepted.
+    std::vector<std::string> difficulties;
     std::string levelType = "all";
     std::string status = "unchecked";
     std::string minSend = "any";
@@ -396,7 +396,10 @@ static std::string normalizeRequestDifficultyKey(std::string raw, int stars) {
 static bool requestMetaMatchesLocalFilters(RequestMeta const& meta) {
     if (meta.event != "0") return false;
 
-    if (g_filters.difficulty != "all" && meta.difficultyKey != g_filters.difficulty) return false;
+    if (!g_filters.difficulties.empty() &&
+        std::find(g_filters.difficulties.begin(), g_filters.difficulties.end(), meta.difficultyKey) == g_filters.difficulties.end()) {
+        return false;
+    }
 
     if (g_filters.rated == "rated" && !meta.rated) return false;
     if (g_filters.rated == "unrated" && meta.rated) return false;
@@ -524,11 +527,12 @@ class FeedbackPopup final : public geode::Popup {
 protected:
     RequestContext m_context;
     geode::TextInput* m_input = nullptr;
-    geode::SimpleTextArea* m_textArea = nullptr;
+    CCLabelBMFont* m_measureLabel = nullptr;
     CCLabelBMFont* m_counter = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
     CCMenuItemSpriteExtra* m_focusTarget = nullptr;
     CCLayerColor* m_caret = nullptr;
+    std::vector<CCLabelBMFont*> m_lineLabels;
     std::string m_value;
     bool m_focused = false;
 
@@ -536,53 +540,89 @@ protected:
     static constexpr float FIELD_H = 94.f;
     static constexpr float FIELD_X = 45.f;
     static constexpr float FIELD_Y = 66.f;
-    static constexpr std::size_t MAX_VISIBLE_LINES = 8;
+    static constexpr float TEXT_LEFT = FIELD_X + 10.f;
+    static constexpr float TEXT_TOP = FIELD_Y + FIELD_H - 14.f;
+    static constexpr float TEXT_SCALE = .58f;
+    static constexpr float LINE_STEP = 11.2f;
+    static constexpr std::size_t MAX_VISIBLE_LINES = 7;
 
-    void layoutVisibleText() {
-        if (!m_textArea) return;
-
-        // Do not move the textarea as it grows. The old implementation repeatedly
-        // repositioned the whole node (and previously even chopped characters from the
-        // front), which is what made the text visibly jump while typing.
-        // Keep one fixed top-left origin and place wrapped line labels onto fixed rows.
-        m_textArea->setPosition({FIELD_X + 10.f, FIELD_Y + FIELD_H - 17.f});
-
-        auto lines = m_textArea->getLines();
-        auto visibleCount = std::min<std::size_t>(MAX_VISIBLE_LINES, lines.size());
-        auto firstVisible = lines.size() > visibleCount ? lines.size() - visibleCount : 0;
-        auto lineStep = m_textArea->getLineHeight() + m_textArea->getLinePadding();
-
-        for (std::size_t i = 0; i < lines.size(); ++i) {
-            auto* line = lines[i];
-            if (!line) continue;
-            bool visible = i >= firstVisible;
-            line->setVisible(visible);
-            if (!visible) continue;
-
-            auto row = static_cast<float>(i - firstVisible);
-            line->setAnchorPoint({0.f, .5f});
-            line->setPosition({0.f, -row * lineStep});
-        }
+    float measuredWidth(std::string const& text) {
+        if (!m_measureLabel) return 0.f;
+        m_measureLabel->setString(text.c_str());
+        return m_measureLabel->getContentSize().width * TEXT_SCALE;
     }
 
-    void refreshCaret() {
-        if (!m_caret || !m_textArea) return;
-        m_caret->setVisible(m_focused);
-        if (!m_focused) return;
+    std::vector<std::string> wrapText(std::string const& text) {
+        std::vector<std::string> lines;
+        std::string current;
+        constexpr float maxWidth = FIELD_W - 20.f;
 
-        auto lines = m_textArea->getLines();
-        if (lines.empty() || !lines.back()) {
-            m_caret->setPosition({FIELD_X + 10.f, FIELD_Y + FIELD_H - 22.f});
-            return;
+        auto pushCurrent = [&]() {
+            lines.push_back(current);
+            current.clear();
+        };
+
+        for (char c : text) {
+            if (c == '\r') continue;
+            if (c == '\n') {
+                pushCurrent();
+                continue;
+            }
+
+            std::string candidate = current;
+            candidate.push_back(c);
+            if (!current.empty() && measuredWidth(candidate) > maxWidth) {
+                pushCurrent();
+                current.push_back(c);
+            } else {
+                current = std::move(candidate);
+            }
         }
 
-        auto* line = lines.back();
-        auto box = line->boundingBox();
-        auto x = m_textArea->getPositionX() + box.getMaxX() + 1.5f;
-        auto y = m_textArea->getPositionY() + line->getPositionY() - 5.f;
-        x = std::clamp(x, FIELD_X + 10.f, FIELD_X + FIELD_W - 8.f);
-        y = std::clamp(y, FIELD_Y + 5.f, FIELD_Y + FIELD_H - 12.f);
-        m_caret->setPosition({x, y});
+        if (!current.empty() || lines.empty()) lines.push_back(current);
+        return lines;
+    }
+
+    void clearRenderedLines() {
+        for (auto* label : m_lineLabels) {
+            if (label) label->removeFromParentAndCleanup(true);
+        }
+        m_lineLabels.clear();
+    }
+
+    void renderText() {
+        if (!m_mainLayer) return;
+        clearRenderedLines();
+
+        auto lines = wrapText(m_value);
+        auto visibleCount = std::min<std::size_t>(MAX_VISIBLE_LINES, lines.size());
+        auto firstVisible = lines.size() > visibleCount ? lines.size() - visibleCount : 0;
+
+        for (std::size_t row = 0; row < visibleCount; ++row) {
+            auto const& text = lines[firstVisible + row];
+            auto* label = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+            if (!label) continue;
+            label->setScale(TEXT_SCALE);
+            label->setAnchorPoint({0.f, 1.f});
+            label->setPosition({TEXT_LEFT, TEXT_TOP - static_cast<float>(row) * LINE_STEP});
+            label->setColor(ccc3(255, 255, 255));
+            m_mainLayer->addChild(label, 5);
+            m_lineLabels.push_back(label);
+        }
+
+        if (m_caret) {
+            m_caret->setVisible(m_focused);
+            if (m_focused) {
+                std::string tail;
+                if (!lines.empty()) tail = lines.back();
+                auto row = visibleCount > 0 ? visibleCount - 1 : 0;
+                auto x = TEXT_LEFT + measuredWidth(tail) + 1.5f;
+                auto y = TEXT_TOP - static_cast<float>(row) * LINE_STEP - 9.2f;
+                x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
+                y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
+                m_caret->setPosition({x, y});
+            }
+        }
     }
 
     void refreshVisuals() {
@@ -590,14 +630,7 @@ protected:
             auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
-        if (m_textArea) {
-            // Always render the actual value. No per-character tail slicing, no ellipsis
-            // rewriting, and no moving the whole block when another line appears.
-            m_textArea->setText(m_value);
-            m_textArea->setColor(ccc4(255, 255, 255, 255));
-            layoutVisibleText();
-            refreshCaret();
-        }
+        renderText();
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
     }
 
@@ -621,7 +654,7 @@ protected:
         if (!m_input) return;
         m_focused = true;
         m_input->focus();
-        refreshCaret();
+        refreshVisuals();
     }
 
     bool initFor(RequestContext const& context) {
@@ -636,24 +669,15 @@ protected:
         box->setPosition({FIELD_X, FIELD_Y});
         m_mainLayer->addChild(box, 1);
 
-        m_textArea = geode::SimpleTextArea::create(
-            m_value,
-            "chatFont.fnt",
-            .58f,
-            FIELD_W - 20.f
-        );
-        if (!m_textArea) return false;
-        m_textArea->setAlignment(kCCTextAlignmentLeft);
-        m_textArea->setWrappingMode(geode::CUTOFF_WRAP);
-        m_textArea->setLinePadding(1.5f);
-        // Keep the real wrapped lines. We control which rows are visible ourselves so the
-        // renderer never replaces the last line with "..." while the user is typing.
-        m_textArea->setMaxLines(0);
-        m_textArea->setColor(ccc4(255, 255, 255, 255));
-        m_mainLayer->addChild(m_textArea, 5);
+        // The visible editor is deliberately made from fixed-position BMFont labels.
+        // SimpleTextArea lays out its child labels in its own coordinate system and was the
+        // source of the giant left/down drift seen in-game. TextInput remains the actual
+        // keyboard/IME buffer, but no visible text node is allowed to reposition itself.
+        m_measureLabel = CCLabelBMFont::create("", "chatFont.fnt");
+        if (!m_measureLabel) return false;
+        m_measureLabel->setVisible(false);
+        m_mainLayer->addChild(m_measureLabel, 0);
 
-        // Native Geode TextInput is single-line. Keep it invisible only as the IME buffer;
-        // SimpleTextArea above is the visible multiline renderer.
         m_input = geode::TextInput::create(FIELD_W, "", "chatFont.fnt");
         if (!m_input) return false;
         m_input->setPosition({-1000.f, -1000.f});
@@ -671,7 +695,7 @@ protected:
         m_placeholder->setScale(.48f);
         m_placeholder->setOpacity(145);
         m_placeholder->setAnchorPoint({0.f, .5f});
-        m_placeholder->setPosition({FIELD_X + 10.f, FIELD_Y + FIELD_H - 17.f});
+        m_placeholder->setPosition({TEXT_LEFT, TEXT_TOP - 4.f});
         m_mainLayer->addChild(m_placeholder, 6);
 
         m_caret = CCLayerColor::create(ccc4(255, 255, 255, 255), 1.4f, 10.f);
@@ -794,6 +818,14 @@ static std::string prettyDifficulty(std::string const& v) {
     if (v == "demon-extreme") return "Extreme Demon";
     return v + " stars";
 }
+
+static std::string prettyDifficultySelection(std::vector<std::string> const& values) {
+    if (values.empty()) return "Any";
+    if (values.size() == 1) return prettyDifficulty(values.front());
+    if (values.size() == 2) return prettyDifficulty(values[0]) + ", " + prettyDifficulty(values[1]);
+    return std::to_string(values.size()) + " selected";
+}
+
 static std::string prettyType(std::string const& v) {
     if (v == "classic") return "Classic";
     if (v == "platformer") return "Platformer";
@@ -833,70 +865,193 @@ static void cycleValue(T& value, std::vector<T> const& values, int direction) {
     value = values[idx];
 }
 
-class DifficultyPickerPopup final : public geode::Popup {
-protected:
-    std::string m_selected;
-    std::function<void(std::string const&)> m_onSelect;
+static bool containsDifficulty(std::vector<std::string> const& values, std::string const& key) {
+    return std::find(values.begin(), values.end(), key) != values.end();
+}
 
-    static std::string compactDifficulty(std::string const& key) {
-        if (key == "all") return "ANY";
-        if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') return key + "*";
-        if (key == "demon-easy") return "EASY DEMON";
-        if (key == "demon-medium") return "MEDIUM DEMON";
-        if (key == "demon-hard") return "HARD DEMON";
-        if (key == "demon-insane") return "INSANE DEMON";
-        if (key == "demon-extreme") return "EXTREME DEMON";
-        return key;
+static char const* difficultyFrameFor(std::string const& key) {
+    if (key == "all") return "difficulty_00_btn_001.png";
+    if (key == "1") return "difficulty_auto_btn_001.png";
+    if (key == "2") return "difficulty_01_btn_001.png";
+    if (key == "3") return "difficulty_02_btn_001.png";
+    if (key == "4" || key == "5") return "difficulty_03_btn_001.png";
+    if (key == "6" || key == "7") return "difficulty_04_btn_001.png";
+    if (key == "8" || key == "9") return "difficulty_05_btn_001.png";
+    if (key == "demon-easy") return "difficulty_07_btn_001.png";
+    if (key == "demon-medium") return "difficulty_08_btn_001.png";
+    if (key == "demon-hard") return "difficulty_06_btn_001.png";
+    if (key == "demon-insane") return "difficulty_09_btn_001.png";
+    if (key == "demon-extreme") return "difficulty_10_btn_001.png";
+    return "difficulty_00_btn_001.png";
+}
+
+static std::string difficultyTileCaption(std::string const& key) {
+    if (key == "all") return "ANY";
+    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') return key;
+    if (key == "demon-easy") return "EASY";
+    if (key == "demon-medium") return "MEDIUM";
+    if (key == "demon-hard") return "HARD";
+    if (key == "demon-insane") return "INSANE";
+    if (key == "demon-extreme") return "EXTREME";
+    return key;
+}
+
+static CCNode* makeDifficultyTile(std::string const& key, bool selected) {
+    auto* tile = CCNode::create();
+    tile->setContentSize({68.f, 64.f});
+    tile->setAnchorPoint({.5f, .5f});
+
+    auto* bg = CCScale9Sprite::createWithSpriteFrameName("square02b_001.png");
+    if (bg) {
+        bg->setContentSize({62.f, 60.f});
+        bg->setPosition({34.f, 32.f});
+        bg->setOpacity(selected ? 185 : 90);
+        bg->setColor(selected ? ccc3(70, 190, 65) : ccc3(95, 53, 34));
+        tile->addChild(bg, 0);
     }
 
-    bool initFor(std::string const& selected, std::function<void(std::string const&)> onSelect) {
-        m_selected = selected;
-        m_onSelect = std::move(onSelect);
-        if (!Popup::init(420.f, 255.f)) return false;
-        setTitle("REQUESTED DIFFICULTY", "goldFont.fnt", .58f, 20.f);
+    auto* cache = CCSpriteFrameCache::sharedSpriteFrameCache();
+    auto* frame = cache ? cache->spriteFrameByName(difficultyFrameFor(key)) : nullptr;
+    CCSprite* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
+    if (face) {
+        face->setScale(.52f);
+        face->setPosition({34.f, 39.f});
+        face->setOpacity(selected ? 255 : 205);
+        tile->addChild(face, 2);
+    }
 
-        constexpr float xs[] = {82.f, 210.f, 338.f};
-        constexpr float ys[] = {196.f, 162.f, 128.f, 94.f, 60.f};
+    auto caption = difficultyTileCaption(key);
+    auto* label = CCLabelBMFont::create(caption.c_str(), "bigFont.fnt");
+    if (label) {
+        label->setScale(key.rfind("demon-", 0) == 0 ? .25f : .34f);
+        label->setPosition({key.size() == 1 ? 28.f : 34.f, 10.f});
+        tile->addChild(label, 3);
+    }
 
+    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') {
+        auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
+        if (star) {
+            star->setScale(.16f);
+            star->setPosition({41.f, 10.f});
+            tile->addChild(star, 3);
+        }
+    }
+
+    if (selected) {
+        auto* check = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
+        if (check) {
+            check->setScale(.32f);
+            check->setPosition({57.f, 53.f});
+            tile->addChild(check, 5);
+        }
+    }
+    return tile;
+}
+
+class DifficultyPickerPopup final : public geode::Popup {
+protected:
+    std::vector<std::string> m_selected;
+    std::function<void(std::vector<std::string> const&)> m_onApply;
+    std::vector<std::pair<std::string, CCMenuItemSpriteExtra*>> m_tiles;
+    CCLabelBMFont* m_summary = nullptr;
+
+    bool selected(std::string const& key) const {
+        return key == "all" ? m_selected.empty() : containsDifficulty(m_selected, key);
+    }
+
+    void refreshTiles() {
+        for (auto& [key, button] : m_tiles) {
+            if (!button) continue;
+            button->setSprite(makeDifficultyTile(key, selected(key)));
+            button->setSizeMult(1.f);
+        }
+        if (m_summary) {
+            auto summary = m_selected.empty()
+                ? std::string("ANY DIFFICULTY")
+                : std::to_string(m_selected.size()) + (m_selected.size() == 1 ? " DIFFICULTY" : " DIFFICULTIES");
+            m_summary->setString(summary.c_str());
+        }
+    }
+
+    bool initFor(
+        std::vector<std::string> const& selectedValues,
+        std::function<void(std::vector<std::string> const&)> onApply
+    ) {
+        m_selected = selectedValues;
+        m_onApply = std::move(onApply);
+        if (!Popup::init(430.f, 320.f)) return false;
+        setTitle("REQUESTED DIFFICULTIES", "goldFont.fnt", .58f, 20.f);
+
+        auto* panel = CCScale9Sprite::createWithSpriteFrameName("square02b_001.png");
+        if (panel) {
+            panel->setContentSize({402.f, 220.f});
+            panel->setPosition({215.f, 169.f});
+            panel->setOpacity(75);
+            panel->setColor(ccc3(95, 53, 34));
+            m_mainLayer->addChild(panel, 0);
+        }
+
+        constexpr float xs[] = {55.f, 135.f, 215.f, 295.f, 375.f};
+        constexpr float ys[] = {232.f, 162.f, 92.f};
         for (std::size_t i = 0; i < DIFFICULTIES.size(); ++i) {
             auto const& key = DIFFICULTIES[i];
-            auto label = compactDifficulty(key);
-            bool selectedNow = key == m_selected;
-            auto* spr = ButtonSprite::create(
-                label.c_str(),
-                108,
-                true,
-                "bigFont.fnt",
-                selectedNow ? "GJ_button_01.png" : "GJ_button_04.png",
-                28.f,
-                label.size() > 8 ? .40f : .50f
+            auto* btn = CCMenuItemSpriteExtra::create(
+                makeDifficultyTile(key, selected(key)),
+                this,
+                menu_selector(DifficultyPickerPopup::onToggle)
             );
-            auto* btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(DifficultyPickerPopup::onPick));
             btn->setUserObject(CCString::create(key.c_str()));
-            btn->setPosition({xs[i % 3], ys[i / 3]});
+            btn->setPosition({xs[i % 5], ys[i / 5]});
             btn->setSizeMult(1.f);
             m_buttonMenu->addChild(btn);
+            m_tiles.emplace_back(key, btn);
         }
+
+        m_summary = CCLabelBMFont::create("ANY DIFFICULTY", "goldFont.fnt");
+        if (m_summary) {
+            m_summary->setScale(.28f);
+            m_summary->setPosition({110.f, 34.f});
+            m_mainLayer->addChild(m_summary);
+        }
+
+        auto* applySpr = ButtonSprite::create("APPLY", 78, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .55f);
+        auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(DifficultyPickerPopup::onApply));
+        applyBtn->setPosition({320.f, 34.f});
+        m_buttonMenu->addChild(applyBtn);
+
+        refreshTiles();
         return true;
     }
 
-    void onPick(CCObject* sender) {
+    void onToggle(CCObject* sender) {
         auto* node = typeinfo_cast<CCNode*>(sender);
         if (!node) return;
         auto* value = typeinfo_cast<CCString*>(node->getUserObject());
         if (!value) return;
-        auto selected = std::string(value->getCString());
-        if (m_onSelect) m_onSelect(selected);
+        auto key = std::string(value->getCString());
+
+        if (key == "all") {
+            m_selected.clear();
+        } else {
+            auto it = std::find(m_selected.begin(), m_selected.end(), key);
+            if (it == m_selected.end()) m_selected.push_back(key);
+            else m_selected.erase(it);
+        }
+        refreshTiles();
+    }
+
+    void onApply(CCObject*) {
+        if (m_onApply) m_onApply(m_selected);
         onClose(nullptr);
     }
 
 public:
     static DifficultyPickerPopup* create(
-        std::string const& selected,
-        std::function<void(std::string const&)> onSelect
+        std::vector<std::string> const& selected,
+        std::function<void(std::vector<std::string> const&)> onApply
     ) {
         auto* ret = new DifficultyPickerPopup();
-        if (ret && ret->initFor(selected, std::move(onSelect))) {
+        if (ret && ret->initFor(selected, std::move(onApply))) {
             ret->autorelease();
             return ret;
         }
@@ -957,7 +1112,7 @@ protected:
     void refresh() {
         normalizeDependentFilters();
         if (m_difficultyButton) {
-            auto difficultyText = prettyDifficulty(m_working.difficulty);
+            auto difficultyText = prettyDifficultySelection(m_working.difficulties);
             auto* spr = ButtonSprite::create(
                 difficultyText.c_str(), 170, true, "bigFont.fnt", "GJ_button_04.png", 28.f,
                 difficultyText.size() > 10 ? .40f : .48f
@@ -1023,9 +1178,9 @@ protected:
 
     void onDifficultyPicker(CCObject*) {
         if (auto* popup = DifficultyPickerPopup::create(
-            m_working.difficulty,
-            [this](std::string const& value) {
-                this->m_working.difficulty = value;
+            m_working.difficulties,
+            [this](std::vector<std::string> const& values) {
+                this->m_working.difficulties = values;
                 this->refresh();
             }
         )) popup->show();
