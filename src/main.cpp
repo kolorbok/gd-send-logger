@@ -525,6 +525,12 @@ static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
 
 class FeedbackPopup final : public geode::Popup {
 protected:
+    struct WrappedLine {
+        std::string text;
+        std::size_t startByte = 0;
+        std::size_t endByte = 0;
+    };
+
     RequestContext m_context;
     geode::TextInput* m_input = nullptr;
     CCLabelBMFont* m_measureLabel = nullptr;
@@ -534,7 +540,9 @@ protected:
     CCLayerColor* m_caret = nullptr;
     std::vector<CCLabelBMFont*> m_lineLabels;
     std::string m_value;
+    std::size_t m_cursorByte = 0;
     bool m_focused = false;
+    bool m_cursorInitialized = false;
 
     static constexpr float FIELD_W = 250.f;
     static constexpr float FIELD_H = 94.f;
@@ -546,40 +554,77 @@ protected:
     static constexpr float LINE_STEP = 11.2f;
     static constexpr std::size_t MAX_VISIBLE_LINES = 7;
 
-    float measuredWidth(std::string const& text) {
-        if (!m_measureLabel) return 0.f;
+    float measuredRawWidth(std::string const& text) {
+        if (!m_measureLabel || text.empty()) return 0.f;
         m_measureLabel->setString(text.c_str());
-        return m_measureLabel->getContentSize().width * TEXT_SCALE;
+        return m_measureLabel->getContentSize().width;
     }
 
-    std::vector<std::string> wrapText(std::string const& text) {
-        std::vector<std::string> lines;
+    float measuredWidth(std::string const& text) {
+        return measuredRawWidth(text) * TEXT_SCALE;
+    }
+
+    static std::size_t nextUtf8Boundary(std::string const& text, std::size_t index) {
+        if (index >= text.size()) return text.size();
+        auto lead = static_cast<unsigned char>(text[index]);
+        std::size_t step = 1;
+        if ((lead & 0xE0) == 0xC0) step = 2;
+        else if ((lead & 0xF0) == 0xE0) step = 3;
+        else if ((lead & 0xF8) == 0xF0) step = 4;
+        return std::min(text.size(), index + step);
+    }
+
+    static std::vector<std::size_t> utf8Boundaries(std::string const& text) {
+        std::vector<std::size_t> result;
+        result.reserve(text.size() + 1);
+        result.push_back(0);
+        for (std::size_t i = 0; i < text.size();) {
+            i = nextUtf8Boundary(text, i);
+            result.push_back(i);
+        }
+        return result;
+    }
+
+    std::vector<WrappedLine> wrapText(std::string const& text) {
+        std::vector<WrappedLine> lines;
         std::string current;
+        std::size_t lineStart = 0;
         constexpr float maxWidth = FIELD_W - 20.f;
 
-        auto pushCurrent = [&]() {
-            lines.push_back(current);
+        auto pushCurrent = [&](std::size_t endByte) {
+            lines.push_back({current, lineStart, endByte});
             current.clear();
         };
 
-        for (char c : text) {
-            if (c == '\r') continue;
-            if (c == '\n') {
-                pushCurrent();
+        for (std::size_t i = 0; i < text.size();) {
+            auto next = nextUtf8Boundary(text, i);
+            auto token = text.substr(i, next - i);
+
+            if (token == "\r") {
+                i = next;
+                continue;
+            }
+            if (token == "\n") {
+                pushCurrent(i);
+                lineStart = next;
+                i = next;
                 continue;
             }
 
-            std::string candidate = current;
-            candidate.push_back(c);
+            auto candidate = current + token;
             if (!current.empty() && measuredWidth(candidate) > maxWidth) {
-                pushCurrent();
-                current.push_back(c);
+                pushCurrent(i);
+                lineStart = i;
+                current = token;
             } else {
                 current = std::move(candidate);
             }
+            i = next;
         }
 
-        if (!current.empty() || lines.empty()) lines.push_back(current);
+        // Always keep the final visual line, including an empty line after a trailing newline.
+        lines.push_back({current, lineStart, text.size()});
+        if (lines.empty()) lines.push_back({"", 0, 0});
         return lines;
     }
 
@@ -590,17 +635,88 @@ protected:
         m_lineLabels.clear();
     }
 
+    std::size_t cursorLineIndex(std::vector<WrappedLine> const& lines) const {
+        if (lines.empty()) return 0;
+        auto cursor = std::min(m_cursorByte, m_value.size());
+        std::size_t result = 0;
+        // Pick the last line whose start is <= cursor. This intentionally maps an exact
+        // soft-wrap boundary to the beginning of the next line rather than the end of the old one.
+        for (std::size_t i = 1; i < lines.size(); ++i) {
+            if (lines[i].startByte <= cursor) result = i;
+            else break;
+        }
+        return result;
+    }
+
+    std::size_t detectNativeCursorByteOffset() {
+        if (!m_input || m_value.empty()) return 0;
+        auto* node = m_input->getInputNode();
+        if (!node || !node->m_cursor || !node->m_textLabel) {
+            return std::min(m_cursorByte, m_value.size());
+        }
+
+        auto* cursor = node->m_cursor;
+        auto* label = node->m_textLabel;
+        auto* cursorParent = cursor->getParent();
+        if (!cursorParent) return std::min(m_cursorByte, m_value.size());
+
+        auto cursorWorld = cursorParent->convertToWorldSpace(cursor->getPosition());
+        auto labelSize = label->getContentSize();
+        auto labelLeft = label->convertToWorldSpace({0.f, labelSize.height * .5f});
+        auto labelRight = label->convertToWorldSpace({labelSize.width, labelSize.height * .5f});
+        auto worldWidth = labelRight.x - labelLeft.x;
+        auto rawWidth = measuredRawWidth(m_value);
+        if (std::fabs(worldWidth) < .001f || rawWidth <= .001f) {
+            return std::min(m_cursorByte, m_value.size());
+        }
+
+        auto targetRawX = (cursorWorld.x - labelLeft.x) * rawWidth / worldWidth;
+        targetRawX = std::clamp(targetRawX, 0.f, rawWidth);
+
+        auto boundaries = utf8Boundaries(m_value);
+        if (boundaries.empty()) return 0;
+
+        std::size_t lo = 0;
+        std::size_t hi = boundaries.size();
+        while (lo < hi) {
+            auto mid = lo + (hi - lo) / 2;
+            auto width = measuredRawWidth(m_value.substr(0, boundaries[mid]));
+            if (width < targetRawX) lo = mid + 1;
+            else hi = mid;
+        }
+
+        auto best = lo < boundaries.size() ? lo : boundaries.size() - 1;
+        if (best > 0) {
+            auto rightWidth = measuredRawWidth(m_value.substr(0, boundaries[best]));
+            auto leftWidth = measuredRawWidth(m_value.substr(0, boundaries[best - 1]));
+            if (std::fabs(targetRawX - leftWidth) <= std::fabs(rightWidth - targetRawX)) {
+                --best;
+            }
+        }
+        return boundaries[best];
+    }
+
     void renderText() {
         if (!m_mainLayer) return;
         clearRenderedLines();
 
         auto lines = wrapText(m_value);
         auto visibleCount = std::min<std::size_t>(MAX_VISIBLE_LINES, lines.size());
-        auto firstVisible = lines.size() > visibleCount ? lines.size() - visibleCount : 0;
+        auto caretLine = cursorLineIndex(lines);
+
+        std::size_t firstVisible = 0;
+        if (lines.size() > visibleCount) {
+            if (m_focused) {
+                firstVisible = caretLine >= visibleCount ? caretLine - visibleCount + 1 : 0;
+                firstVisible = std::min(firstVisible, lines.size() - visibleCount);
+            } else {
+                firstVisible = lines.size() - visibleCount;
+            }
+        }
 
         for (std::size_t row = 0; row < visibleCount; ++row) {
-            auto const& text = lines[firstVisible + row];
-            auto* label = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+            auto const& line = lines[firstVisible + row];
+            auto* label = CCLabelBMFont::create(line.text.c_str(), "chatFont.fnt");
             if (!label) continue;
             label->setScale(TEXT_SCALE);
             label->setAnchorPoint({0.f, 1.f});
@@ -611,12 +727,16 @@ protected:
         }
 
         if (m_caret) {
-            m_caret->setVisible(m_focused);
-            if (m_focused) {
-                std::string tail;
-                if (!lines.empty()) tail = lines.back();
-                auto row = visibleCount > 0 ? visibleCount - 1 : 0;
-                auto x = TEXT_LEFT + measuredWidth(tail) + 1.5f;
+            auto caretVisible = m_focused && caretLine >= firstVisible && caretLine < firstVisible + visibleCount;
+            m_caret->setVisible(caretVisible);
+            if (caretVisible) {
+                auto const& line = lines[caretLine];
+                auto cursor = std::min(m_cursorByte, m_value.size());
+                auto prefixBytes = cursor > line.startByte ? cursor - line.startByte : 0;
+                prefixBytes = std::min(prefixBytes, line.text.size());
+                auto prefix = line.text.substr(0, prefixBytes);
+                auto row = caretLine - firstVisible;
+                auto x = TEXT_LEFT + measuredWidth(prefix) + 1.5f;
                 auto y = TEXT_TOP - static_cast<float>(row) * LINE_STEP - 9.2f;
                 x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
                 y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
@@ -642,6 +762,7 @@ protected:
                 m_input->setString(gd::string(m_value.c_str()), false);
             }
         }
+        m_cursorByte = std::min(m_cursorByte, m_value.size());
         refreshVisuals();
     }
 
@@ -654,13 +775,36 @@ protected:
         if (!m_input) return;
         m_focused = true;
         m_input->focus();
+
+        // RobTop's CCTextInputNode remembers a real insertion cursor separately from our
+        // rendered multiline caret. A freshly created node starts at character 0 even when
+        // setString already contains saved feedback, so explicitly put the native cursor at
+        // the end on the first focus of each popup.
+        if (!m_cursorInitialized) {
+            if (auto* node = m_input->getInputNode()) {
+                node->updateBlinkLabelToChar(static_cast<int>(m_value.size()));
+            }
+            m_cursorByte = m_value.size();
+            m_cursorInitialized = true;
+        }
         refreshVisuals();
+    }
+
+    void pollNativeCursor(float) {
+        if (!m_focused || !m_input) return;
+        auto cursor = detectNativeCursorByteOffset();
+        cursor = std::min(cursor, m_value.size());
+        if (cursor != m_cursorByte) {
+            m_cursorByte = cursor;
+            renderText();
+        }
     }
 
     bool initFor(RequestContext const& context) {
         m_context = context;
         m_value = feedbackFor(context);
         if (m_value.size() > FEEDBACK_LIMIT) m_value.resize(FEEDBACK_LIMIT);
+        m_cursorByte = m_value.size();
         if (!Popup::init(340.f, 205.f)) return false;
         setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
 
@@ -669,10 +813,8 @@ protected:
         box->setPosition({FIELD_X, FIELD_Y});
         m_mainLayer->addChild(box, 1);
 
-        // The visible editor is deliberately made from fixed-position BMFont labels.
-        // SimpleTextArea lays out its child labels in its own coordinate system and was the
-        // source of the giant left/down drift seen in-game. TextInput remains the actual
-        // keyboard/IME buffer, but no visible text node is allowed to reposition itself.
+        // Fixed-position BMFont rows are used for the visible multiline editor. The native
+        // TextInput stays off-screen and owns only IME / editing / the real insertion index.
         m_measureLabel = CCLabelBMFont::create("", "chatFont.fnt");
         if (!m_measureLabel) return false;
         m_measureLabel->setVisible(false);
@@ -727,17 +869,13 @@ protected:
         saveBtn->setPosition({222.f, 25.f});
         m_buttonMenu->addChild(saveBtn);
 
+        this->schedule(schedule_selector(FeedbackPopup::pollNativeCursor), .025f);
         refreshVisuals();
         return true;
     }
 
     void dismissEditor(CCObject* sender = nullptr) {
-        // TextInput is intentionally off-screen, so it must explicitly release the IME
-        // before this popup is destroyed. Otherwise the old hidden input can keep keyboard
-        // focus and a freshly reopened feedback editor appears read-only.
-        if (m_input) {
-            m_input->defocus();
-        }
+        if (m_input) m_input->defocus();
         m_focused = false;
         Popup::onClose(sender);
     }
@@ -929,37 +1067,38 @@ static bool isDemonDifficulty(std::string const& key) {
 }
 
 static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
-    // Deliberately use a textureless sprite as the clickable root. Individual square02b
-    // backgrounds looked corrupted with some texture packs; the picker now has one flat
-    // dark panel behind the whole grid, like GD's native search-filter presentation.
     auto* tile = CCSprite::create();
-    tile->setContentSize({70.f, 58.f});
+    tile->setContentSize({72.f, 61.f});
     tile->setAnchorPoint({.5f, .5f});
 
     auto* cache = CCSpriteFrameCache::sharedSpriteFrameCache();
     auto* frame = cache ? cache->spriteFrameByName(difficultyFrameFor(key)) : nullptr;
     CCSprite* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
     if (face) {
-        face->setScale(.46f);
-        face->setPosition({35.f, 37.f});
-        face->setOpacity(selected ? 255 : 225);
+        // Make the whole native icon+caption group noticeably larger. Normal difficulty
+        // captions stay native; demon captions are replaced below because the stock frame
+        // only says the generic word DEMON.
+        face->setScale(isDemonDifficulty(key) ? .59f : .58f);
+        face->setPosition({36.f, 40.5f});
+        face->setOpacity(selected ? 255 : 235);
         tile->addChild(face, 2);
     }
 
     if (isDemonDifficulty(key)) {
-        // The stock demon button frames contain the generic word DEMON. Cover only that
-        // caption strip and replace it with the exact subtype requested by the user.
-        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 66.f, 11.f);
+        // The *_btn demon frames bake the word DEMON into the sprite. Cover the ENTIRE
+        // caption band (the previous narrow strip left the top of those letters visible),
+        // then draw one exact subtype caption in its place. No duplicate DEMON text remains.
+        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 18.5f);
         if (captionMask) {
-            captionMask->setPosition({2.f, 17.5f});
+            captionMask->setPosition({0.f, 16.f});
             tile->addChild(captionMask, 3);
         }
 
         auto name = difficultyDisplayName(key);
         auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
         if (nameLabel) {
-            nameLabel->setScale(name.size() >= 13 ? .155f : .18f);
-            nameLabel->setPosition({35.f, 23.f});
+            nameLabel->setScale(name.size() >= 13 ? .178f : .205f);
+            nameLabel->setPosition({36.f, 20.2f});
             tile->addChild(nameLabel, 4);
         }
     }
@@ -969,23 +1108,25 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         auto starText = std::to_string(stars);
         auto* starsLabel = CCLabelBMFont::create(starText.c_str(), "bigFont.fnt");
         if (starsLabel) {
-            starsLabel->setScale(.31f);
+            starsLabel->setScale(.36f);
             starsLabel->setAnchorPoint({1.f, .5f});
-            starsLabel->setPosition({35.f, 6.5f});
+            starsLabel->setPosition({35.2f, 5.8f});
             tile->addChild(starsLabel, 4);
         }
 
         auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
         if (star) {
-            star->setScale(.28f);
-            star->setPosition({43.f, 6.5f});
+            // Larger and optically lowered so the star center sits on the same baseline
+            // as the number instead of floating above it.
+            star->setScale(.40f);
+            star->setPosition({46.2f, 4.8f});
             tile->addChild(star, 4);
         }
     } else if (key == "all") {
         auto* anyLabel = CCLabelBMFont::create("ANY", "bigFont.fnt");
         if (anyLabel) {
-            anyLabel->setScale(.27f);
-            anyLabel->setPosition({35.f, 6.5f});
+            anyLabel->setScale(.30f);
+            anyLabel->setPosition({36.f, 5.8f});
             tile->addChild(anyLabel, 4);
         }
     }
@@ -993,8 +1134,8 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
     if (selected) {
         auto* check = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
         if (check) {
-            check->setScale(.27f);
-            check->setPosition({61.f, 50.f});
+            check->setScale(.30f);
+            check->setPosition({63.f, 52.f});
             tile->addChild(check, 5);
         }
     }
