@@ -736,7 +736,7 @@ protected:
         // before this popup is destroyed. Otherwise the old hidden input can keep keyboard
         // focus and a freshly reopened feedback editor appears read-only.
         if (m_input) {
-            m_input->unfocus();
+            m_input->defocus();
         }
         m_focused = false;
         Popup::onClose(sender);
