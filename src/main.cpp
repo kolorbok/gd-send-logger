@@ -896,8 +896,8 @@ static std::string difficultyTileCaption(std::string const& key) {
     return key;
 }
 
-static CCNode* makeDifficultyTile(std::string const& key, bool selected) {
-    auto* tile = CCNode::create();
+static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
+    auto* tile = CCSprite::create();
     tile->setContentSize({68.f, 64.f});
     tile->setAnchorPoint({.5f, .5f});
 
@@ -1807,7 +1807,7 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         return LevelBrowserLayer::getSearchTitle();
     }
 
-    void onBack(CCObject* sender) {
+    void onBack(CCObject* sender) override {
         bool wasRequestBrowser = isThisRequestBrowser();
         if (wasRequestBrowser) {
             g_requestBrowserActive = false;
