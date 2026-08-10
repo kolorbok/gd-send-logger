@@ -2028,15 +2028,64 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
             log::error("[REQUESTS UI] Could not load custom Requests icon from {}", iconPath);
             return;
         }
-        sprite->setScale(.77f);
+        // Do not use a fixed scale here. A PNG loaded directly from the mod resources has a
+        // different logical content size when GD switches between High / Medium / Low texture
+        // quality. That made the same .77 scale appear roughly twice as large on lower quality.
+        // Instead, mirror the actual vanilla button geometry that is already on this menu.
+        CCMenuItem* lowestButton = nullptr;
+        CCMenuItem* secondLowestButton = nullptr;
+        if (auto* children = menu->getChildren()) {
+            for (unsigned int i = 0; i < children->count(); ++i) {
+                auto* item = typeinfo_cast<CCMenuItem*>(children->objectAtIndex(i));
+                if (!item || !item->isVisible()) continue;
+
+                if (!lowestButton || item->getPositionY() < lowestButton->getPositionY()) {
+                    secondLowestButton = lowestButton;
+                    lowestButton = item;
+                } else if (!secondLowestButton || item->getPositionY() < secondLowestButton->getPositionY()) {
+                    secondLowestButton = item;
+                }
+            }
+        }
+
+        float targetSize = 48.f;
+        CCSize referenceSize = {targetSize, targetSize};
+        if (lowestButton) {
+            referenceSize = lowestButton->getContentSize();
+            targetSize = std::max(referenceSize.width, referenceSize.height);
+            if (targetSize < 1.f) {
+                targetSize = 48.f;
+                referenceSize = {targetSize, targetSize};
+            }
+        }
+
+        auto sourceSize = sprite->getContentSize();
+        auto sourceMax = std::max(sourceSize.width, sourceSize.height);
+        if (sourceMax > 0.f) sprite->setScale(targetSize / sourceMax);
+
         auto* button = CCMenuItemSpriteExtra::create(
             sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
         );
         if (!button) return;
         button->setID("kolorbok.gd-send-logger/requests-button");
+
+        // Give the custom item exactly the same layout / hitbox footprint as a vanilla button.
+        // More importantly, do NOT call updateLayout after inserting it: the vanilla buttons
+        // keep their original positions instead of being shifted by our extra item.
+        button->setContentSize(referenceSize);
+        sprite->setPosition({referenceSize.width / 2.f, referenceSize.height / 2.f});
         menu->addChild(button);
-        if (menu->getLayout()) menu->updateLayout();
-        else button->setPosition({menu->getContentSize().width / 2.f, menu->getContentSize().height / 2.f});
+
+        if (lowestButton) {
+            float spacing = targetSize + 6.f;
+            if (secondLowestButton) {
+                auto measured = std::abs(secondLowestButton->getPositionY() - lowestButton->getPositionY());
+                if (measured > 1.f) spacing = measured;
+            }
+            button->setPosition({lowestButton->getPositionX(), lowestButton->getPositionY() - spacing});
+        } else {
+            button->setPosition({menu->getContentSize().width / 2.f, menu->getContentSize().height / 2.f});
+        }
     }
 
     bool init(int type) {
