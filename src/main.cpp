@@ -2019,10 +2019,15 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
         }
         if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
 
-        // Custom Requests icon shipped with the mod. Using a real sprite resource keeps
-        // the button identical on every supported platform instead of drawing it in code.
-        auto* sprite = CCSprite::createWithSpriteFrameName("request-star.png"_spr);
-        if (!sprite) return;
+        // Load the Requests icon directly from this mod's extracted resources directory.
+        // This deliberately avoids the sprite-frame cache: if a custom frame is not registered,
+        // Geode displays its magenta/black missing-texture fallback instead of our PNG.
+        auto iconPath = (Mod::get()->getResourcesDir() / "request-star.png").string();
+        auto* sprite = CCSprite::create(iconPath.c_str());
+        if (!sprite) {
+            log::error("[REQUESTS UI] Could not load custom Requests icon from {}", iconPath);
+            return;
+        }
         sprite->setScale(.28f);
         auto* button = CCMenuItemSpriteExtra::create(
             sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
@@ -2205,7 +2210,7 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
 
         // Native GD cyan cancel button: orange X on a blue/cyan circular background.
         auto* rejectSprite = CCSprite::createWithSpriteFrameName("GJ_cancelDownloadBtn_001.png");
-        rejectSprite->setScale(1.18f);
+        rejectSprite->setScale(1.25f);
         auto* rejectBtn = CCMenuItemSpriteExtra::create(rejectSprite, this, menu_selector(GDRequestsLevelInfoLayer::onRejectRequest));
         rejectBtn->setID("kolorbok.gd-send-logger/request-reject-button");
         menu->addChild(rejectBtn);
