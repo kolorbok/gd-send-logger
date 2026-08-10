@@ -35,7 +35,7 @@ using namespace geode::prelude;
 namespace {
 
 constexpr char const* MOD_NAME = "GD Requests";
-constexpr std::size_t FEEDBACK_LIMIT = 500;
+constexpr std::size_t FEEDBACK_LIMIT = 1500;
 
 struct SendSnapshot {
     int levelID = 0;
@@ -711,7 +711,7 @@ protected:
         m_focusTarget->setSizeMult(1.f);
         m_buttonMenu->addChild(m_focusTarget, 20);
 
-        m_counter = CCLabelBMFont::create("0/500", "goldFont.fnt");
+        m_counter = CCLabelBMFont::create("0/1500", "goldFont.fnt");
         m_counter->setScale(.27f);
         m_counter->setAnchorPoint({1.f, .5f});
         m_counter->setPosition({300.f, 58.f});
@@ -731,17 +731,32 @@ protected:
         return true;
     }
 
+    void dismissEditor(CCObject* sender = nullptr) {
+        // TextInput is intentionally off-screen, so it must explicitly release the IME
+        // before this popup is destroyed. Otherwise the old hidden input can keep keyboard
+        // focus and a freshly reopened feedback editor appears read-only.
+        if (m_input) {
+            m_input->unfocus();
+        }
+        m_focused = false;
+        Popup::onClose(sender);
+    }
+
+    void onClose(CCObject* sender) override {
+        dismissEditor(sender);
+    }
+
     void onFocus(CCObject*) { focusInput(); }
-    void onCancel(CCObject*) { onClose(nullptr); }
+    void onCancel(CCObject*) { dismissEditor(nullptr); }
 
     void onSave(CCObject*) {
         if (!m_context.active || m_context.request.requestID <= 0) {
-            onClose(nullptr);
+            dismissEditor(nullptr);
             return;
         }
         syncValueFromInput();
         g_feedbackDrafts[m_context.request.requestID] = m_value;
-        onClose(nullptr);
+        dismissEditor(nullptr);
     }
 
 public:
@@ -885,63 +900,101 @@ static char const* difficultyFrameFor(std::string const& key) {
     return "difficulty_00_btn_001.png";
 }
 
-static std::string difficultyTileCaption(std::string const& key) {
-    if (key == "all") return "ANY";
-    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') return key;
-    if (key == "demon-easy") return "EASY";
-    if (key == "demon-medium") return "MEDIUM";
-    if (key == "demon-hard") return "HARD";
-    if (key == "demon-insane") return "INSANE";
-    if (key == "demon-extreme") return "EXTREME";
-    return key;
+static std::string difficultyDisplayName(std::string const& key) {
+    if (key == "all") return "NA";
+    if (key == "1") return "AUTO";
+    if (key == "2") return "EASY";
+    if (key == "3") return "NORMAL";
+    if (key == "4" || key == "5") return "HARD";
+    if (key == "6" || key == "7") return "HARDER";
+    if (key == "8" || key == "9") return "INSANE";
+    if (key == "demon-easy") return "EASY DEMON";
+    if (key == "demon-medium") return "MEDIUM DEMON";
+    if (key == "demon-hard") return "HARD DEMON";
+    if (key == "demon-insane") return "INSANE DEMON";
+    if (key == "demon-extreme") return "EXTREME DEMON";
+    return upperCopy(key);
+}
+
+static int difficultyStarCount(std::string const& key) {
+    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') {
+        return key[0] - '0';
+    }
+    if (key.rfind("demon-", 0) == 0) return 10;
+    return 0;
+}
+
+static bool isDemonDifficulty(std::string const& key) {
+    return key.rfind("demon-", 0) == 0;
 }
 
 static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
+    // Deliberately use a textureless sprite as the clickable root. Individual square02b
+    // backgrounds looked corrupted with some texture packs; the picker now has one flat
+    // dark panel behind the whole grid, like GD's native search-filter presentation.
     auto* tile = CCSprite::create();
-    tile->setContentSize({68.f, 64.f});
+    tile->setContentSize({70.f, 58.f});
     tile->setAnchorPoint({.5f, .5f});
-
-    auto* bg = CCScale9Sprite::createWithSpriteFrameName("square02b_001.png");
-    if (bg) {
-        bg->setContentSize({62.f, 60.f});
-        bg->setPosition({34.f, 32.f});
-        bg->setOpacity(selected ? 185 : 90);
-        bg->setColor(selected ? ccc3(70, 190, 65) : ccc3(95, 53, 34));
-        tile->addChild(bg, 0);
-    }
 
     auto* cache = CCSpriteFrameCache::sharedSpriteFrameCache();
     auto* frame = cache ? cache->spriteFrameByName(difficultyFrameFor(key)) : nullptr;
     CCSprite* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
     if (face) {
-        face->setScale(.52f);
-        face->setPosition({34.f, 39.f});
-        face->setOpacity(selected ? 255 : 205);
+        face->setScale(.46f);
+        face->setPosition({35.f, 37.f});
+        face->setOpacity(selected ? 255 : 225);
         tile->addChild(face, 2);
     }
 
-    auto caption = difficultyTileCaption(key);
-    auto* label = CCLabelBMFont::create(caption.c_str(), "bigFont.fnt");
-    if (label) {
-        label->setScale(key.rfind("demon-", 0) == 0 ? .25f : .34f);
-        label->setPosition({key.size() == 1 ? 28.f : 34.f, 10.f});
-        tile->addChild(label, 3);
+    if (isDemonDifficulty(key)) {
+        // The stock demon button frames contain the generic word DEMON. Cover only that
+        // caption strip and replace it with the exact subtype requested by the user.
+        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 66.f, 11.f);
+        if (captionMask) {
+            captionMask->setPosition({2.f, 17.5f});
+            tile->addChild(captionMask, 3);
+        }
+
+        auto name = difficultyDisplayName(key);
+        auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
+        if (nameLabel) {
+            nameLabel->setScale(name.size() >= 13 ? .155f : .18f);
+            nameLabel->setPosition({35.f, 23.f});
+            tile->addChild(nameLabel, 4);
+        }
     }
 
-    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') {
+    auto stars = difficultyStarCount(key);
+    if (stars > 0) {
+        auto starText = std::to_string(stars);
+        auto* starsLabel = CCLabelBMFont::create(starText.c_str(), "bigFont.fnt");
+        if (starsLabel) {
+            starsLabel->setScale(.31f);
+            starsLabel->setAnchorPoint({1.f, .5f});
+            starsLabel->setPosition({35.f, 6.5f});
+            tile->addChild(starsLabel, 4);
+        }
+
         auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
         if (star) {
-            star->setScale(.16f);
-            star->setPosition({41.f, 10.f});
-            tile->addChild(star, 3);
+            star->setScale(.28f);
+            star->setPosition({43.f, 6.5f});
+            tile->addChild(star, 4);
+        }
+    } else if (key == "all") {
+        auto* anyLabel = CCLabelBMFont::create("ANY", "bigFont.fnt");
+        if (anyLabel) {
+            anyLabel->setScale(.27f);
+            anyLabel->setPosition({35.f, 6.5f});
+            tile->addChild(anyLabel, 4);
         }
     }
 
     if (selected) {
         auto* check = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
         if (check) {
-            check->setScale(.32f);
-            check->setPosition({57.f, 53.f});
+            check->setScale(.27f);
+            check->setPosition({61.f, 50.f});
             tile->addChild(check, 5);
         }
     }
@@ -979,20 +1032,20 @@ protected:
     ) {
         m_selected = selectedValues;
         m_onApply = std::move(onApply);
-        if (!Popup::init(430.f, 320.f)) return false;
+        if (!Popup::init(430.f, 292.f)) return false;
         setTitle("REQUESTED DIFFICULTIES", "goldFont.fnt", .58f, 20.f);
 
-        auto* panel = CCScale9Sprite::createWithSpriteFrameName("square02b_001.png");
+        // One flat, slightly darker field instead of 15 textured scale9 tiles. This keeps
+        // the layout readable even when the player uses a texture pack that replaces
+        // square02b_001.png with a strongly patterned sprite.
+        auto* panel = CCLayerColor::create(ccc4(72, 40, 28, 255), 402.f, 190.f);
         if (panel) {
-            panel->setContentSize({402.f, 220.f});
-            panel->setPosition({215.f, 169.f});
-            panel->setOpacity(75);
-            panel->setColor(ccc3(95, 53, 34));
+            panel->setPosition({14.f, 61.f});
             m_mainLayer->addChild(panel, 0);
         }
 
         constexpr float xs[] = {55.f, 135.f, 215.f, 295.f, 375.f};
-        constexpr float ys[] = {232.f, 162.f, 92.f};
+        constexpr float ys[] = {216.f, 156.f, 96.f};
         for (std::size_t i = 0; i < DIFFICULTIES.size(); ++i) {
             auto const& key = DIFFICULTIES[i];
             auto* btn = CCMenuItemSpriteExtra::create(
@@ -1010,13 +1063,13 @@ protected:
         m_summary = CCLabelBMFont::create("ANY DIFFICULTY", "goldFont.fnt");
         if (m_summary) {
             m_summary->setScale(.28f);
-            m_summary->setPosition({110.f, 34.f});
+            m_summary->setPosition({110.f, 30.f});
             m_mainLayer->addChild(m_summary);
         }
 
         auto* applySpr = ButtonSprite::create("APPLY", 78, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .55f);
         auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(DifficultyPickerPopup::onApply));
-        applyBtn->setPosition({320.f, 34.f});
+        applyBtn->setPosition({320.f, 30.f});
         m_buttonMenu->addChild(applyBtn);
 
         refreshTiles();
