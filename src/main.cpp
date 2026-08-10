@@ -1294,32 +1294,33 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
     auto* frame = cache ? cache->spriteFrameByName(difficultyFrameFor(key)) : nullptr;
     auto* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
     if (face) {
-        // Keep stock *_btn assets only. Demon buttons are slightly smaller and higher so the
-        // narrow caption cover can never cut into horns/jaw even with a custom texture pack.
-        face->setScale(isDemonDifficulty(key) ? .69f : .80f);
-        face->setPosition({36.f, isDemonDifficulty(key) ? 44.8f : 43.8f});
+        // Keep stock *_btn assets only. Demons sit a touch higher and slightly smaller so their
+        // custom caption can cover the baked-in DEMON text without eating the jaw / horns.
+        face->setScale(isDemonDifficulty(key) ? .67f : .80f);
+        face->setPosition({36.f, isDemonDifficulty(key) ? 45.8f : 43.8f});
         face->setOpacity(selected ? 255 : 240);
         tile->addChild(face, 2);
     }
 
-    if (isDemonDifficulty(key)) {
-        // The stock demon *_btn frames bake the generic word DEMON into the image. There is
-        // no universally available face-only frame, so cover ONLY that caption baseline.
-        // The demon art is moved/scaled above it, preventing the mask from clipping the face.
-        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 9.2f);
+    if (isDemonDifficulty(key) || key == "all") {
+        // Stock demon / NA *_btn frames include their own caption. Hide that strip and draw our
+        // own text so every tile shares the same baseline.
+        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, key == "all" ? 8.8f : 10.6f);
         if (captionMask) {
-            captionMask->setPosition({0.f, 24.1f});
+            captionMask->setPosition({0.f, key == "all" ? 24.8f : 24.2f});
             tile->addChild(captionMask, 3);
         }
+    }
 
+    if (isDemonDifficulty(key)) {
         auto name = difficultyDisplayName(key);
         auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
         if (nameLabel) {
-            auto scale = name.size() >= 13 ? .205f : .222f;
+            auto scale = name.size() >= 13 ? .198f : .214f;
             nameLabel->setScale(scale);
             auto width = nameLabel->getContentSize().width * scale;
             if (width > 69.f && width > 0.f) nameLabel->setScale(scale * 69.f / width);
-            nameLabel->setPosition({36.f, 27.2f});
+            nameLabel->setPosition({36.f, 31.0f});
             tile->addChild(nameLabel, 4);
         }
     }
@@ -1331,21 +1332,21 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         if (starsLabel) {
             starsLabel->setScale(.40f);
             starsLabel->setAnchorPoint({1.f, .5f});
-            starsLabel->setPosition({35.0f, 18.4f});
+            starsLabel->setPosition({31.4f, 22.6f});
             tile->addChild(starsLabel, 4);
         }
 
         auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
         if (star) {
-            star->setScale(.52f);
-            star->setPosition({47.2f, 18.1f});
+            star->setScale(.54f);
+            star->setPosition({42.8f, 22.3f});
             tile->addChild(star, 4);
         }
     } else if (key == "all") {
         auto* anyLabel = CCLabelBMFont::create("ANY", "bigFont.fnt");
         if (anyLabel) {
             anyLabel->setScale(.30f);
-            anyLabel->setPosition({36.f, 18.4f});
+            anyLabel->setPosition({36.f, 21.8f});
             tile->addChild(anyLabel, 4);
         }
     }
