@@ -529,20 +529,16 @@ static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
 class FeedbackTouchLayer final : public CCLayer {
 protected:
     std::function<void(CCPoint const&)> m_onPoint;
-    std::function<void(cocos2d::enumKeyCodes)> m_onKey;
 
     bool initFor(
         CCSize const& size,
-        std::function<void(CCPoint const&)> onPoint,
-        std::function<void(cocos2d::enumKeyCodes)> onKey
+        std::function<void(CCPoint const&)> onPoint
     ) {
         if (!CCLayer::init()) return false;
         m_onPoint = std::move(onPoint);
-        m_onKey = std::move(onKey);
         setContentSize(size);
         setAnchorPoint({0.f, 0.f});
         setTouchEnabled(true);
-        setKeyboardEnabled(true);
         return true;
     }
 
@@ -554,11 +550,10 @@ protected:
 public:
     static FeedbackTouchLayer* create(
         CCSize const& size,
-        std::function<void(CCPoint const&)> onPoint,
-        std::function<void(cocos2d::enumKeyCodes)> onKey
+        std::function<void(CCPoint const&)> onPoint
     ) {
         auto* ret = new FeedbackTouchLayer();
-        if (ret && ret->initFor(size, std::move(onPoint), std::move(onKey))) {
+        if (ret && ret->initFor(size, std::move(onPoint))) {
             ret->autorelease();
             return ret;
         }
@@ -567,8 +562,8 @@ public:
     }
 
     void registerWithTouchDispatcher() override {
-        // Lower number = higher priority. Swallow only touches that begin inside the editor,
-        // so Save / Cancel / popup close continue to use their normal CCMenu handling.
+        // Mouse clicks on desktop and finger taps on mobile both arrive through the Cocos
+        // touch dispatcher. Swallow only gestures that start inside the feedback field.
         CCDirector::sharedDirector()->getTouchDispatcher()->addTargetedDelegate(this, -1000, true);
     }
 
@@ -587,10 +582,6 @@ public:
         local.x = std::clamp(local.x, 0.f, size.width);
         local.y = std::clamp(local.y, 0.f, size.height);
         m_onPoint(local);
-    }
-
-    void keyDown(cocos2d::enumKeyCodes key, double) override {
-        if (m_onKey) m_onKey(key);
     }
 };
 
@@ -669,15 +660,7 @@ protected:
         text.resize(boundaries[maxChars]);
     }
 
-    static std::size_t utf8CharIndexForByteOffset(std::string const& text, std::size_t byteOffset) {
-        byteOffset = std::min(byteOffset, text.size());
-        std::size_t chars = 0;
-        for (std::size_t i = 0; i < byteOffset;) {
-            i = nextUtf8Boundary(text, i);
-            ++chars;
-        }
-        return chars;
-    }
+
 
     std::size_t nearestBoundaryInLine(std::string const& text, float wantedX) {
         wantedX = std::max(0.f, wantedX);
@@ -823,57 +806,81 @@ protected:
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
     }
 
+    static std::size_t clampUtf8Boundary(std::string const& text, std::size_t byteOffset) {
+        byteOffset = std::min(byteOffset, text.size());
+        while (
+            byteOffset > 0 && byteOffset < text.size() &&
+            (static_cast<unsigned char>(text[byteOffset]) & 0xC0) == 0x80
+        ) {
+            --byteOffset;
+        }
+        return byteOffset;
+    }
+
+    std::size_t nativeCursorByteOffset() const {
+        if (!m_input) return clampUtf8Boundary(m_value, m_cursorByte);
+        auto* node = m_input->getInputNode();
+        if (!node || !node->m_textField) return clampUtf8Boundary(m_value, m_cursorByte);
+
+        // Geometry Dash stores the insertion point on CCTextFieldTTF itself. Treat that raw
+        // position as the authoritative string offset and only snap it away from the middle
+        // of a UTF-8 continuation sequence for our renderer.
+        auto raw = std::max(0, node->m_textField->m_uCursorPos);
+        return clampUtf8Boundary(m_value, static_cast<std::size_t>(raw));
+    }
+
+    void setNativeCursorFromByte(std::size_t byteOffset) {
+        byteOffset = clampUtf8Boundary(m_value, byteOffset);
+        m_cursorByte = byteOffset;
+
+        if (m_input) {
+            if (auto* node = m_input->getInputNode()) {
+                if (node->m_textField) {
+                    // This is the real insertion point used by CCTextFieldTTF::insertText /
+                    // deleteBackward / deleteForward. Merely moving CCTextInputNode's blink
+                    // label is not enough and was the cause of the visual/actual divergence.
+                    node->m_textField->m_uCursorPos = static_cast<int>(byteOffset);
+                }
+                node->updateBlinkLabel();
+            }
+        }
+    }
+
+    void syncNativeCursor(float) {
+        if (!m_focused || !m_input) return;
+        auto cursorByte = nativeCursorByteOffset();
+        if (cursorByte != m_cursorByte) {
+            m_cursorByte = cursorByte;
+            renderText();
+        }
+    }
+
     void setValueFromInput(std::string const& value) {
-        auto previous = m_value;
         auto next = value;
         truncateUtf8ToChars(next, FEEDBACK_LIMIT);
+        auto wasTruncated = next != value;
 
-        // Derive the edit span from the longest common prefix/suffix. This keeps the
-        // rendered caret correct for insertion, paste, backspace and forward-delete
-        // without trying to reverse-engineer the hidden one-line label's cursor geometry.
-        std::size_t prefix = 0;
-        while (prefix < previous.size() && prefix < next.size() && previous[prefix] == next[prefix]) {
-            ++prefix;
-        }
-        // Never place the caret in the middle of a UTF-8 continuation byte.
-        while (prefix > 0 && prefix < next.size() && (static_cast<unsigned char>(next[prefix]) & 0xC0) == 0x80) {
-            --prefix;
-        }
-
-        std::size_t suffix = 0;
-        while (
-            suffix < previous.size() - std::min(prefix, previous.size()) &&
-            suffix < next.size() - std::min(prefix, next.size()) &&
-            previous[previous.size() - 1 - suffix] == next[next.size() - 1 - suffix]
-        ) {
-            ++suffix;
-        }
-
-        auto insertedBytes = next.size() - prefix - suffix;
         m_value = std::move(next);
-        m_cursorByte = std::min(prefix + insertedBytes, m_value.size());
 
-        if (m_input && gdToStd(m_input->getString()) != m_value) {
+        if (wasTruncated && m_input && gdToStd(m_input->getString()) != m_value) {
+            // setString may reset the internal cursor, so preserve its native insertion offset,
+            // clamp it to the truncated buffer, then restore the actual cursor.
+            auto nativeByte = nativeCursorByteOffset();
             m_input->setString(gd::string(m_value.c_str()), false);
-            setNativeCursorFromByte(m_cursorByte);
+            setNativeCursorFromByte(nativeByte);
+        } else {
+            // Do not infer the caret from a text diff. That is ambiguous when the inserted
+            // character equals its neighbour (for example inserting another 'l' in "hello").
+            // The real CCTextFieldTTF cursor is authoritative.
+            m_cursorByte = nativeCursorByteOffset();
         }
+
         refreshVisuals();
     }
 
     void syncValueFromInput() {
         if (!m_input) return;
         setValueFromInput(gdToStd(m_input->getString()));
-    }
-
-    void setNativeCursorFromByte(std::size_t byteOffset) {
-        byteOffset = std::min(byteOffset, m_value.size());
-        m_cursorByte = byteOffset;
-        if (m_input) {
-            if (auto* node = m_input->getInputNode()) {
-                auto charIndex = utf8CharIndexForByteOffset(m_value, byteOffset);
-                node->updateBlinkLabelToChar(static_cast<int>(charIndex));
-            }
-        }
     }
 
     void placeCursorFromFieldPoint(CCPoint const& local) {
@@ -903,74 +910,6 @@ protected:
         refreshVisuals();
     }
 
-    std::size_t previousBoundary(std::size_t byteOffset) const {
-        byteOffset = std::min(byteOffset, m_value.size());
-        if (byteOffset == 0) return 0;
-        auto i = byteOffset - 1;
-        while (i > 0 && (static_cast<unsigned char>(m_value[i]) & 0xC0) == 0x80) --i;
-        return i;
-    }
-
-    std::size_t nextBoundary(std::size_t byteOffset) const {
-        return nextUtf8Boundary(m_value, std::min(byteOffset, m_value.size()));
-    }
-
-    void moveCursorVertical(int direction) {
-        auto lines = wrapText(m_value);
-        if (lines.empty()) return;
-        auto currentLine = cursorLineIndex(lines);
-        auto targetSigned = static_cast<long>(currentLine) + direction;
-        targetSigned = std::clamp<long>(targetSigned, 0, static_cast<long>(lines.size() - 1));
-        auto targetLine = static_cast<std::size_t>(targetSigned);
-        if (targetLine == currentLine) return;
-
-        auto const& current = lines[currentLine];
-        auto currentInLine = m_cursorByte > current.startByte ? m_cursorByte - current.startByte : 0;
-        currentInLine = std::min(currentInLine, current.text.size());
-        auto wantedX = measuredWidth(current.text.substr(0, currentInLine));
-
-        auto const& target = lines[targetLine];
-        m_cursorByte = std::min(target.startByte + nearestBoundaryInLine(target.text, wantedX), m_value.size());
-        renderText();
-    }
-
-    void handleEditorKey(cocos2d::enumKeyCodes key) {
-        if (!m_focused) return;
-        bool changed = false;
-        if (key == cocos2d::KEY_Left) {
-            auto next = previousBoundary(m_cursorByte);
-            changed = next != m_cursorByte;
-            m_cursorByte = next;
-        } else if (key == cocos2d::KEY_Right) {
-            auto next = nextBoundary(m_cursorByte);
-            changed = next != m_cursorByte;
-            m_cursorByte = next;
-        } else if (key == cocos2d::KEY_Home) {
-            auto lines = wrapText(m_value);
-            if (!lines.empty()) {
-                auto line = cursorLineIndex(lines);
-                auto next = lines[line].startByte;
-                changed = next != m_cursorByte;
-                m_cursorByte = next;
-            }
-        } else if (key == cocos2d::KEY_End) {
-            auto lines = wrapText(m_value);
-            if (!lines.empty()) {
-                auto line = cursorLineIndex(lines);
-                auto next = lines[line].endByte;
-                changed = next != m_cursorByte;
-                m_cursorByte = next;
-            }
-        } else if (key == cocos2d::KEY_Up) {
-            moveCursorVertical(-1);
-            return;
-        } else if (key == cocos2d::KEY_Down) {
-            moveCursorVertical(1);
-            return;
-        }
-
-        if (changed) renderText();
-    }
 
     void focusInput() {
         if (!m_input) return;
@@ -1037,8 +976,7 @@ protected:
 
         m_touchLayer = FeedbackTouchLayer::create(
             CCSize(FIELD_W, FIELD_H),
-            [this](CCPoint const& local) { this->placeCursorFromFieldPoint(local); },
-            [this](cocos2d::enumKeyCodes key) { this->handleEditorKey(key); }
+            [this](CCPoint const& local) { this->placeCursorFromFieldPoint(local); }
         );
         if (!m_touchLayer) return false;
         m_touchLayer->setPosition({FIELD_X, FIELD_Y});
@@ -1060,11 +998,16 @@ protected:
         saveBtn->setPosition({222.f, 25.f});
         m_buttonMenu->addChild(saveBtn);
 
+        // Keyboard/IME navigation is handled only by the native TextInput. We merely mirror
+        // its actual cursor to the wrapped visual editor. This avoids double-handling arrows
+        // on Windows and also works with Android/iOS/macOS IME implementations.
+        this->schedule(schedule_selector(FeedbackPopup::syncNativeCursor), .016f);
         refreshVisuals();
         return true;
     }
 
     void dismissEditor(CCObject* sender = nullptr) {
+        this->unschedule(schedule_selector(FeedbackPopup::syncNativeCursor));
         if (m_input) m_input->defocus();
         m_focused = false;
         Popup::onClose(sender);
@@ -1211,7 +1154,23 @@ static bool containsDifficulty(std::vector<std::string> const& values, std::stri
     return std::find(values.begin(), values.end(), key) != values.end();
 }
 
-static char const* difficultyFrameFor(std::string const& key) {
+static char const* difficultyFaceFrameFor(std::string const& key) {
+    if (key == "all") return "difficulty_00_001.png";
+    if (key == "1") return "difficulty_auto_001.png";
+    if (key == "2") return "difficulty_01_001.png";
+    if (key == "3") return "difficulty_02_001.png";
+    if (key == "4" || key == "5") return "difficulty_03_001.png";
+    if (key == "6" || key == "7") return "difficulty_04_001.png";
+    if (key == "8" || key == "9") return "difficulty_05_001.png";
+    if (key == "demon-easy") return "difficulty_07_001.png";
+    if (key == "demon-medium") return "difficulty_08_001.png";
+    if (key == "demon-hard") return "difficulty_06_001.png";
+    if (key == "demon-insane") return "difficulty_09_001.png";
+    if (key == "demon-extreme") return "difficulty_10_001.png";
+    return "difficulty_00_001.png";
+}
+
+static char const* difficultyButtonFrameFor(std::string const& key) {
     if (key == "all") return "difficulty_00_btn_001.png";
     if (key == "1") return "difficulty_auto_btn_001.png";
     if (key == "2") return "difficulty_01_btn_001.png";
@@ -1244,9 +1203,7 @@ static std::string difficultyDisplayName(std::string const& key) {
 }
 
 static int difficultyStarCount(std::string const& key) {
-    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') {
-        return key[0] - '0';
-    }
+    if (key.size() == 1 && key[0] >= '1' && key[0] <= '9') return key[0] - '0';
     if (key.rfind("demon-", 0) == 0) return 10;
     return 0;
 }
@@ -1261,35 +1218,43 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
     tile->setAnchorPoint({.5f, .5f});
 
     auto* cache = CCSpriteFrameCache::sharedSpriteFrameCache();
-    auto* frame = cache ? cache->spriteFrameByName(difficultyFrameFor(key)) : nullptr;
-    CCSprite* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
+    auto* frame = cache ? cache->spriteFrameByName(difficultyFaceFrameFor(key)) : nullptr;
+    bool buttonFallback = false;
+    if (!frame && cache) {
+        frame = cache->spriteFrameByName(difficultyButtonFrameFor(key));
+        buttonFallback = frame != nullptr;
+    }
+
+    auto* face = frame ? CCSprite::createWithSpriteFrame(frame) : nullptr;
     if (face) {
-        // Make the whole native icon+caption group noticeably larger. Normal difficulty
-        // captions stay native; demon captions are replaced below because the stock frame
-        // only says the generic word DEMON.
-        face->setScale(isDemonDifficulty(key) ? .75f : .74f);
-        face->setPosition({36.f, 42.5f});
-        face->setOpacity(selected ? 255 : 235);
+        // Vanilla provides face-only frames for these difficulties. Using them means the
+        // subtype label is never painted over a baked DEMON caption and no mask can crop
+        // the horns / jaw. The button fallback is only for unusual texture packs.
+        face->setScale(buttonFallback ? .62f : .86f);
+        face->setPosition({36.f, buttonFallback ? 45.0f : 44.0f});
+        face->setOpacity(selected ? 255 : 240);
         tile->addChild(face, 2);
     }
 
-    if (isDemonDifficulty(key)) {
-        // The *_btn demon frames bake the word DEMON into the sprite. Cover the ENTIRE
-        // caption band (the previous narrow strip left the top of those letters visible),
-        // then draw one exact subtype caption in its place. No duplicate DEMON text remains.
-        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 19.5f);
+    if (buttonFallback) {
+        // Fallback button frames include a baked caption. Cover only the low caption strip;
+        // keep it below the actual face so demon artwork is not clipped.
+        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 10.f);
         if (captionMask) {
-            captionMask->setPosition({0.f, 17.5f});
+            captionMask->setPosition({0.f, 24.f});
             tile->addChild(captionMask, 3);
         }
+    }
 
-        auto name = difficultyDisplayName(key);
-        auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
-        if (nameLabel) {
-            nameLabel->setScale(name.size() >= 13 ? .220f : .238f);
-            nameLabel->setPosition({36.f, 28.2f});
-            tile->addChild(nameLabel, 4);
-        }
+    auto name = difficultyDisplayName(key);
+    auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
+    if (nameLabel) {
+        float scale = isDemonDifficulty(key) ? .215f : .255f;
+        nameLabel->setScale(scale);
+        auto width = nameLabel->getContentSize().width * scale;
+        if (width > 68.f && width > 0.f) nameLabel->setScale(scale * 68.f / width);
+        nameLabel->setPosition({36.f, 27.0f});
+        tile->addChild(nameLabel, 4);
     }
 
     auto stars = difficultyStarCount(key);
@@ -1299,23 +1264,21 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         if (starsLabel) {
             starsLabel->setScale(.39f);
             starsLabel->setAnchorPoint({1.f, .5f});
-            starsLabel->setPosition({35.0f, 10.0f});
+            starsLabel->setPosition({35.0f, 15.0f});
             tile->addChild(starsLabel, 4);
         }
 
         auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
         if (star) {
-            // Larger and optically lowered so the star center sits on the same baseline
-            // as the number instead of floating above it.
             star->setScale(.50f);
-            star->setPosition({47.2f, 9.7f});
+            star->setPosition({47.0f, 14.7f});
             tile->addChild(star, 4);
         }
     } else if (key == "all") {
         auto* anyLabel = CCLabelBMFont::create("ANY", "bigFont.fnt");
         if (anyLabel) {
             anyLabel->setScale(.30f);
-            anyLabel->setPosition({36.f, 10.0f});
+            anyLabel->setPosition({36.f, 15.0f});
             tile->addChild(anyLabel, 4);
         }
     }
@@ -1324,7 +1287,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         auto* check = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
         if (check) {
             check->setScale(.30f);
-            check->setPosition({63.f, 54.f});
+            check->setPosition({63.f, 55.f});
             tile->addChild(check, 5);
         }
     }

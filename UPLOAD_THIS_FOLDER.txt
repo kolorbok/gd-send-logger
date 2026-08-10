@@ -2,15 +2,20 @@ THIS IS THE MOD REPOSITORY ROOT.
 
 Upload/push the CONTENTS of this folder to github.com/kolorbok/gd-send-logger.
 Expected checks before pushing:
-- mod.json version = v2.0.20
+- mod.json version = v2.0.21
 - src/main.cpp contains: FEEDBACK_LIMIT = 1500
 - src/main.cpp contains: class DifficultyPickerPopup
 - src/main.cpp contains: class FeedbackTouchLayer
 - src/main.cpp contains: addTargetedDelegate(this, -1000, true)
-- src/main.cpp contains: updateBlinkLabelToChar
-- src/main.cpp contains: keyDown(cocos2d::enumKeyCodes
+- src/main.cpp contains: m_textField->m_uCursorPos
+- src/main.cpp contains: syncNativeCursor
+- src/main.cpp contains: difficultyFaceFrameFor
+- src/main.cpp contains: difficulty_10_001.png
+- src/main.cpp does NOT contain: handleEditorKey
 - src/main.cpp does NOT contain: pollNativeCursor
 - src/main.cpp does NOT contain: detectNativeCursorByteOffset
 
 The bot-side bridge patch is still required for exact demon subtype keys.
 Do not upload the bot patch into the Geode repository.
+
+First in-game cursor test: click between two middle characters, type one character, then use Left/Right; both insertion and the visible caret must stay at the same native position.
