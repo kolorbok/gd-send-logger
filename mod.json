@@ -8,7 +8,7 @@
   },
   "id": "kolorbok.gd-send-logger",
   "name": "GD Requests",
-  "version": "v2.0.25",
+  "version": "v2.0.26",
   "developer": "kolorbok",
   "description": "",
   "settings": {
@@ -40,5 +40,10 @@
       "required": false
     },
     "geode.node-ids": ">=v1.22.0"
+  },
+  "resources": {
+    "sprites": [
+      "resources/request-star.png"
+    ]
   }
 }

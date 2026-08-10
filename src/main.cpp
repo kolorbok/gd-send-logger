@@ -2019,10 +2019,11 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
         }
         if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
 
-        auto* sprite = ButtonSprite::create(
-            "REQ", 48, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .58f
-        );
+        // Custom Requests icon shipped with the mod. Using a real sprite resource keeps
+        // the button identical on every supported platform instead of drawing it in code.
+        auto* sprite = CCSprite::createWithSpriteFrameName("request-star.png"_spr);
         if (!sprite) return;
+        sprite->setScale(.28f);
         auto* button = CCMenuItemSpriteExtra::create(
             sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
         );
@@ -2202,8 +2203,9 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
             menu->addChild(fakeBtn);
         }
 
-        auto* rejectSprite = CCSprite::createWithSpriteFrameName("GJ_dislikeBtn_001.png");
-        rejectSprite->setScale(1.f);
+        // Native GD cyan cancel button: orange X on a blue/cyan circular background.
+        auto* rejectSprite = CCSprite::createWithSpriteFrameName("GJ_cancelDownloadBtn_001.png");
+        rejectSprite->setScale(1.18f);
         auto* rejectBtn = CCMenuItemSpriteExtra::create(rejectSprite, this, menu_selector(GDRequestsLevelInfoLayer::onRejectRequest));
         rejectBtn->setID("kolorbok.gd-send-logger/request-reject-button");
         menu->addChild(rejectBtn);
