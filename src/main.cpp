@@ -2028,7 +2028,7 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
             log::error("[REQUESTS UI] Could not load custom Requests icon from {}", iconPath);
             return;
         }
-        sprite->setScale(.28f);
+        sprite->setScale(.77f);
         auto* button = CCMenuItemSpriteExtra::create(
             sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
         );
