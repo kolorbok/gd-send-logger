@@ -2049,13 +2049,13 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
         }
 
         float targetSize = 48.f;
-        CCSize referenceSize = {targetSize, targetSize};
+        CCSize referenceSize(targetSize, targetSize);
         if (lowestButton) {
             referenceSize = lowestButton->getContentSize();
             targetSize = std::max(referenceSize.width, referenceSize.height);
             if (targetSize < 1.f) {
                 targetSize = 48.f;
-                referenceSize = {targetSize, targetSize};
+                referenceSize = CCSize(targetSize, targetSize);
             }
         }
 
