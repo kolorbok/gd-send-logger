@@ -1238,7 +1238,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
             auto width = nameLabel->getContentSize().width * scale;
             if (width > 69.f && width > 0.f) nameLabel->setScale(scale * 69.f / width);
             // Draw the subtype exactly on the baked DEMON caption baseline.
-            nameLabel->setPosition({36.f, 35.8f});
+            nameLabel->setPosition({36.f, 33.4f});
             tile->addChild(nameLabel, 4);
         }
     }
