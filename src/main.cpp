@@ -2335,8 +2335,11 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         if (helperPopup && g_context.active && g_context.request.levelID == levelID) {
             captured = g_context;
             captured.mode = "helper";
-        } else if (g_context.active && g_context.request.levelID == levelID &&
+        } else if (moderator && g_context.active && g_context.request.levelID == levelID &&
             (g_context.mode == "helper" || g_context.mode == "moderator")) {
+            // Only the actual moderator-send RateStarsLayer may inherit request context.
+            // The ordinary player "Rate Stars" popup also uses RateStarsLayer, but is
+            // created with moderator=false and must remain completely unrelated to Discord.
             captured = g_context;
         }
 
@@ -2443,7 +2446,9 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
             return;
         }
 
-        bool fakeSend = fakeGDModWillSimulateSend(this);
+        // FakeGDMod compatibility is only for genuine moderator sends. Never let the
+        // ordinary player star-rating popup reach the Discord send bridge.
+        bool fakeSend = m_moderator && !m_fields->helperRequestPopup && fakeGDModWillSimulateSend(this);
         SendSnapshot fakeSnapshot;
         RequestContext captured = m_fields->requestContext;
         if (fakeSend) fakeSnapshot = captureSend(this);
