@@ -523,6 +523,77 @@ static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
 // visible popup gives the user immediate Loading / Connected / Error feedback and avoids
 // capturing a LevelSearchLayer pointer across an asynchronous request.
 
+// A dedicated targeted-touch layer is used over the feedback field instead of a CCMenuItem.
+// This matters on both desktop and mobile: the layer receives every click/tap (and drags),
+// while the hidden TextInput remains the single owner of IME / keyboard editing.
+class FeedbackTouchLayer final : public CCLayer {
+protected:
+    std::function<void(CCPoint const&)> m_onPoint;
+    std::function<void(cocos2d::enumKeyCodes)> m_onKey;
+
+    bool initFor(
+        CCSize const& size,
+        std::function<void(CCPoint const&)> onPoint,
+        std::function<void(cocos2d::enumKeyCodes)> onKey
+    ) {
+        if (!CCLayer::init()) return false;
+        m_onPoint = std::move(onPoint);
+        m_onKey = std::move(onKey);
+        setContentSize(size);
+        setAnchorPoint({0.f, 0.f});
+        setTouchEnabled(true);
+        setKeyboardEnabled(true);
+        return true;
+    }
+
+    bool pointInside(CCPoint const& local) const {
+        auto size = getContentSize();
+        return local.x >= 0.f && local.y >= 0.f && local.x <= size.width && local.y <= size.height;
+    }
+
+public:
+    static FeedbackTouchLayer* create(
+        CCSize const& size,
+        std::function<void(CCPoint const&)> onPoint,
+        std::function<void(cocos2d::enumKeyCodes)> onKey
+    ) {
+        auto* ret = new FeedbackTouchLayer();
+        if (ret && ret->initFor(size, std::move(onPoint), std::move(onKey))) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+
+    void registerWithTouchDispatcher() override {
+        // Lower number = higher priority. Swallow only touches that begin inside the editor,
+        // so Save / Cancel / popup close continue to use their normal CCMenu handling.
+        CCDirector::sharedDirector()->getTouchDispatcher()->addTargetedDelegate(this, -1000, true);
+    }
+
+    bool ccTouchBegan(CCTouch* touch, CCEvent*) override {
+        if (!touch || !isVisible()) return false;
+        auto local = convertToNodeSpace(touch->getLocation());
+        if (!pointInside(local)) return false;
+        if (m_onPoint) m_onPoint(local);
+        return true;
+    }
+
+    void ccTouchMoved(CCTouch* touch, CCEvent*) override {
+        if (!touch || !m_onPoint) return;
+        auto local = convertToNodeSpace(touch->getLocation());
+        auto size = getContentSize();
+        local.x = std::clamp(local.x, 0.f, size.width);
+        local.y = std::clamp(local.y, 0.f, size.height);
+        m_onPoint(local);
+    }
+
+    void keyDown(cocos2d::enumKeyCodes key, double) override {
+        if (m_onKey) m_onKey(key);
+    }
+};
+
 class FeedbackPopup final : public geode::Popup {
 protected:
     struct WrappedLine {
@@ -536,13 +607,15 @@ protected:
     CCLabelBMFont* m_measureLabel = nullptr;
     CCLabelBMFont* m_counter = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
-    CCMenuItemSpriteExtra* m_focusTarget = nullptr;
+    FeedbackTouchLayer* m_touchLayer = nullptr;
     CCLayerColor* m_caret = nullptr;
     std::vector<CCLabelBMFont*> m_lineLabels;
     std::string m_value;
     std::size_t m_cursorByte = 0;
     bool m_focused = false;
     bool m_cursorInitialized = false;
+    std::size_t m_firstVisibleLine = 0;
+    std::size_t m_visibleLineCount = 1;
 
     static constexpr float FIELD_W = 250.f;
     static constexpr float FIELD_H = 94.f;
@@ -583,6 +656,46 @@ protected:
             result.push_back(i);
         }
         return result;
+    }
+
+    static std::size_t utf8CharCount(std::string const& text) {
+        auto boundaries = utf8Boundaries(text);
+        return boundaries.empty() ? 0 : boundaries.size() - 1;
+    }
+
+    static void truncateUtf8ToChars(std::string& text, std::size_t maxChars) {
+        auto boundaries = utf8Boundaries(text);
+        if (boundaries.size() <= maxChars + 1) return;
+        text.resize(boundaries[maxChars]);
+    }
+
+    static std::size_t utf8CharIndexForByteOffset(std::string const& text, std::size_t byteOffset) {
+        byteOffset = std::min(byteOffset, text.size());
+        std::size_t chars = 0;
+        for (std::size_t i = 0; i < byteOffset;) {
+            i = nextUtf8Boundary(text, i);
+            ++chars;
+        }
+        return chars;
+    }
+
+    std::size_t nearestBoundaryInLine(std::string const& text, float wantedX) {
+        wantedX = std::max(0.f, wantedX);
+        auto boundaries = utf8Boundaries(text);
+        if (boundaries.empty() || text.empty()) return 0;
+
+        std::size_t bestByte = 0;
+        float bestDistance = std::fabs(wantedX);
+        for (auto boundary : boundaries) {
+            auto width = measuredWidth(text.substr(0, boundary));
+            auto distance = std::fabs(width - wantedX);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestByte = boundary;
+            }
+            if (width > wantedX && distance > bestDistance) break;
+        }
+        return bestByte;
     }
 
     std::vector<WrappedLine> wrapText(std::string const& text) {
@@ -648,54 +761,6 @@ protected:
         return result;
     }
 
-    std::size_t detectNativeCursorByteOffset() {
-        if (!m_input || m_value.empty()) return 0;
-        auto* node = m_input->getInputNode();
-        if (!node || !node->m_cursor || !node->m_textLabel) {
-            return std::min(m_cursorByte, m_value.size());
-        }
-
-        auto* cursor = node->m_cursor;
-        auto* label = node->m_textLabel;
-        auto* cursorParent = cursor->getParent();
-        if (!cursorParent) return std::min(m_cursorByte, m_value.size());
-
-        auto cursorWorld = cursorParent->convertToWorldSpace(cursor->getPosition());
-        auto labelSize = label->getContentSize();
-        auto labelLeft = label->convertToWorldSpace({0.f, labelSize.height * .5f});
-        auto labelRight = label->convertToWorldSpace({labelSize.width, labelSize.height * .5f});
-        auto worldWidth = labelRight.x - labelLeft.x;
-        auto rawWidth = measuredRawWidth(m_value);
-        if (std::fabs(worldWidth) < .001f || rawWidth <= .001f) {
-            return std::min(m_cursorByte, m_value.size());
-        }
-
-        auto targetRawX = (cursorWorld.x - labelLeft.x) * rawWidth / worldWidth;
-        targetRawX = std::clamp(targetRawX, 0.f, rawWidth);
-
-        auto boundaries = utf8Boundaries(m_value);
-        if (boundaries.empty()) return 0;
-
-        std::size_t lo = 0;
-        std::size_t hi = boundaries.size();
-        while (lo < hi) {
-            auto mid = lo + (hi - lo) / 2;
-            auto width = measuredRawWidth(m_value.substr(0, boundaries[mid]));
-            if (width < targetRawX) lo = mid + 1;
-            else hi = mid;
-        }
-
-        auto best = lo < boundaries.size() ? lo : boundaries.size() - 1;
-        if (best > 0) {
-            auto rightWidth = measuredRawWidth(m_value.substr(0, boundaries[best]));
-            auto leftWidth = measuredRawWidth(m_value.substr(0, boundaries[best - 1]));
-            if (std::fabs(targetRawX - leftWidth) <= std::fabs(rightWidth - targetRawX)) {
-                --best;
-            }
-        }
-        return boundaries[best];
-    }
-
     void renderText() {
         if (!m_mainLayer) return;
         clearRenderedLines();
@@ -713,6 +778,8 @@ protected:
                 firstVisible = lines.size() - visibleCount;
             }
         }
+        m_firstVisibleLine = firstVisible;
+        m_visibleLineCount = std::max<std::size_t>(1, visibleCount);
 
         for (std::size_t row = 0; row < visibleCount; ++row) {
             auto const& line = lines[firstVisible + row];
@@ -736,8 +803,10 @@ protected:
                 prefixBytes = std::min(prefixBytes, line.text.size());
                 auto prefix = line.text.substr(0, prefixBytes);
                 auto row = caretLine - firstVisible;
-                auto x = TEXT_LEFT + measuredWidth(prefix) + 1.5f;
-                auto y = TEXT_TOP - static_cast<float>(row) * LINE_STEP - 9.2f;
+                // Keep the custom caret on the exact text advance. A tiny positive inset
+                // avoids antialiasing overlap without creating the old 1.5 px visual gap.
+                auto x = TEXT_LEFT + measuredWidth(prefix) + .25f;
+                auto y = TEXT_TOP - static_cast<float>(row) * LINE_STEP - 8.9f;
                 x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
                 y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
                 m_caret->setPosition({x, y});
@@ -747,7 +816,7 @@ protected:
 
     void refreshVisuals() {
         if (m_counter) {
-            auto counterText = std::to_string(m_value.size()) + "/" + std::to_string(FEEDBACK_LIMIT);
+            auto counterText = std::to_string(utf8CharCount(m_value)) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
         renderText();
@@ -755,20 +824,152 @@ protected:
     }
 
     void setValueFromInput(std::string const& value) {
-        m_value = value;
-        if (m_value.size() > FEEDBACK_LIMIT) {
-            m_value.resize(FEEDBACK_LIMIT);
-            if (m_input && gdToStd(m_input->getString()) != m_value) {
-                m_input->setString(gd::string(m_value.c_str()), false);
-            }
+        auto previous = m_value;
+        auto next = value;
+        truncateUtf8ToChars(next, FEEDBACK_LIMIT);
+
+        // Derive the edit span from the longest common prefix/suffix. This keeps the
+        // rendered caret correct for insertion, paste, backspace and forward-delete
+        // without trying to reverse-engineer the hidden one-line label's cursor geometry.
+        std::size_t prefix = 0;
+        while (prefix < previous.size() && prefix < next.size() && previous[prefix] == next[prefix]) {
+            ++prefix;
         }
-        m_cursorByte = std::min(m_cursorByte, m_value.size());
+        // Never place the caret in the middle of a UTF-8 continuation byte.
+        while (prefix > 0 && prefix < next.size() && (static_cast<unsigned char>(next[prefix]) & 0xC0) == 0x80) {
+            --prefix;
+        }
+
+        std::size_t suffix = 0;
+        while (
+            suffix < previous.size() - std::min(prefix, previous.size()) &&
+            suffix < next.size() - std::min(prefix, next.size()) &&
+            previous[previous.size() - 1 - suffix] == next[next.size() - 1 - suffix]
+        ) {
+            ++suffix;
+        }
+
+        auto insertedBytes = next.size() - prefix - suffix;
+        m_value = std::move(next);
+        m_cursorByte = std::min(prefix + insertedBytes, m_value.size());
+
+        if (m_input && gdToStd(m_input->getString()) != m_value) {
+            m_input->setString(gd::string(m_value.c_str()), false);
+            setNativeCursorFromByte(m_cursorByte);
+        }
         refreshVisuals();
     }
 
     void syncValueFromInput() {
         if (!m_input) return;
         setValueFromInput(gdToStd(m_input->getString()));
+    }
+
+    void setNativeCursorFromByte(std::size_t byteOffset) {
+        byteOffset = std::min(byteOffset, m_value.size());
+        m_cursorByte = byteOffset;
+        if (m_input) {
+            if (auto* node = m_input->getInputNode()) {
+                auto charIndex = utf8CharIndexForByteOffset(m_value, byteOffset);
+                node->updateBlinkLabelToChar(static_cast<int>(charIndex));
+            }
+        }
+    }
+
+    void placeCursorFromFieldPoint(CCPoint const& local) {
+        if (!m_input) return;
+        focusInput();
+
+        auto lines = wrapText(m_value);
+        if (lines.empty()) return;
+
+        auto first = std::min(m_firstVisibleLine, lines.size() - 1);
+        auto count = std::min<std::size_t>(m_visibleLineCount, lines.size() - first);
+        if (count == 0) count = 1;
+
+        // TEXT_TOP is expressed in popup coordinates; translate it into the field layer.
+        auto firstLineY = (TEXT_TOP - FIELD_Y) - 4.8f;
+        auto rowFloat = (firstLineY - local.y) / LINE_STEP;
+        auto rowSigned = static_cast<long>(std::lround(rowFloat));
+        rowSigned = std::clamp<long>(rowSigned, 0, static_cast<long>(count - 1));
+        auto lineIndex = first + static_cast<std::size_t>(rowSigned);
+        auto const& line = lines[lineIndex];
+
+        auto wantedX = local.x - (TEXT_LEFT - FIELD_X);
+        auto inLineByte = nearestBoundaryInLine(line.text, wantedX);
+        auto byteOffset = std::min(line.startByte + inLineByte, m_value.size());
+        setNativeCursorFromByte(byteOffset);
+        m_cursorInitialized = true;
+        refreshVisuals();
+    }
+
+    std::size_t previousBoundary(std::size_t byteOffset) const {
+        byteOffset = std::min(byteOffset, m_value.size());
+        if (byteOffset == 0) return 0;
+        auto i = byteOffset - 1;
+        while (i > 0 && (static_cast<unsigned char>(m_value[i]) & 0xC0) == 0x80) --i;
+        return i;
+    }
+
+    std::size_t nextBoundary(std::size_t byteOffset) const {
+        return nextUtf8Boundary(m_value, std::min(byteOffset, m_value.size()));
+    }
+
+    void moveCursorVertical(int direction) {
+        auto lines = wrapText(m_value);
+        if (lines.empty()) return;
+        auto currentLine = cursorLineIndex(lines);
+        auto targetSigned = static_cast<long>(currentLine) + direction;
+        targetSigned = std::clamp<long>(targetSigned, 0, static_cast<long>(lines.size() - 1));
+        auto targetLine = static_cast<std::size_t>(targetSigned);
+        if (targetLine == currentLine) return;
+
+        auto const& current = lines[currentLine];
+        auto currentInLine = m_cursorByte > current.startByte ? m_cursorByte - current.startByte : 0;
+        currentInLine = std::min(currentInLine, current.text.size());
+        auto wantedX = measuredWidth(current.text.substr(0, currentInLine));
+
+        auto const& target = lines[targetLine];
+        m_cursorByte = std::min(target.startByte + nearestBoundaryInLine(target.text, wantedX), m_value.size());
+        renderText();
+    }
+
+    void handleEditorKey(cocos2d::enumKeyCodes key) {
+        if (!m_focused) return;
+        bool changed = false;
+        if (key == cocos2d::KEY_Left) {
+            auto next = previousBoundary(m_cursorByte);
+            changed = next != m_cursorByte;
+            m_cursorByte = next;
+        } else if (key == cocos2d::KEY_Right) {
+            auto next = nextBoundary(m_cursorByte);
+            changed = next != m_cursorByte;
+            m_cursorByte = next;
+        } else if (key == cocos2d::KEY_Home) {
+            auto lines = wrapText(m_value);
+            if (!lines.empty()) {
+                auto line = cursorLineIndex(lines);
+                auto next = lines[line].startByte;
+                changed = next != m_cursorByte;
+                m_cursorByte = next;
+            }
+        } else if (key == cocos2d::KEY_End) {
+            auto lines = wrapText(m_value);
+            if (!lines.empty()) {
+                auto line = cursorLineIndex(lines);
+                auto next = lines[line].endByte;
+                changed = next != m_cursorByte;
+                m_cursorByte = next;
+            }
+        } else if (key == cocos2d::KEY_Up) {
+            moveCursorVertical(-1);
+            return;
+        } else if (key == cocos2d::KEY_Down) {
+            moveCursorVertical(1);
+            return;
+        }
+
+        if (changed) renderText();
     }
 
     void focusInput() {
@@ -781,29 +982,16 @@ protected:
         // setString already contains saved feedback, so explicitly put the native cursor at
         // the end on the first focus of each popup.
         if (!m_cursorInitialized) {
-            if (auto* node = m_input->getInputNode()) {
-                node->updateBlinkLabelToChar(static_cast<int>(m_value.size()));
-            }
-            m_cursorByte = m_value.size();
+            setNativeCursorFromByte(m_value.size());
             m_cursorInitialized = true;
         }
         refreshVisuals();
     }
 
-    void pollNativeCursor(float) {
-        if (!m_focused || !m_input) return;
-        auto cursor = detectNativeCursorByteOffset();
-        cursor = std::min(cursor, m_value.size());
-        if (cursor != m_cursorByte) {
-            m_cursorByte = cursor;
-            renderText();
-        }
-    }
-
     bool initFor(RequestContext const& context) {
         m_context = context;
         m_value = feedbackFor(context);
-        if (m_value.size() > FEEDBACK_LIMIT) m_value.resize(FEEDBACK_LIMIT);
+        truncateUtf8ToChars(m_value, FEEDBACK_LIMIT);
         m_cursorByte = m_value.size();
         if (!Popup::init(340.f, 205.f)) return false;
         setTitle("REQUEST FEEDBACK", "goldFont.fnt", .62f, 20.f);
@@ -840,18 +1028,21 @@ protected:
         m_placeholder->setPosition({TEXT_LEFT, TEXT_TOP - 4.f});
         m_mainLayer->addChild(m_placeholder, 6);
 
-        m_caret = CCLayerColor::create(ccc4(255, 255, 255, 255), 1.4f, 10.f);
+        m_caret = CCLayerColor::create(ccc4(255, 255, 255, 255), .62f, 9.2f);
         if (m_caret) {
             m_caret->setVisible(false);
             m_caret->runAction(CCRepeatForever::create(CCBlink::create(.9f, 1)));
             m_mainLayer->addChild(m_caret, 7);
         }
 
-        auto* focusNode = CCLayerColor::create(ccc4(0, 0, 0, 0), FIELD_W, FIELD_H);
-        m_focusTarget = CCMenuItemSpriteExtra::create(focusNode, this, menu_selector(FeedbackPopup::onFocus));
-        m_focusTarget->setPosition({FIELD_X + FIELD_W / 2.f, FIELD_Y + FIELD_H / 2.f});
-        m_focusTarget->setSizeMult(1.f);
-        m_buttonMenu->addChild(m_focusTarget, 20);
+        m_touchLayer = FeedbackTouchLayer::create(
+            CCSize(FIELD_W, FIELD_H),
+            [this](CCPoint const& local) { this->placeCursorFromFieldPoint(local); },
+            [this](cocos2d::enumKeyCodes key) { this->handleEditorKey(key); }
+        );
+        if (!m_touchLayer) return false;
+        m_touchLayer->setPosition({FIELD_X, FIELD_Y});
+        m_mainLayer->addChild(m_touchLayer, 20);
 
         m_counter = CCLabelBMFont::create("0/1500", "goldFont.fnt");
         m_counter->setScale(.27f);
@@ -869,7 +1060,6 @@ protected:
         saveBtn->setPosition({222.f, 25.f});
         m_buttonMenu->addChild(saveBtn);
 
-        this->schedule(schedule_selector(FeedbackPopup::pollNativeCursor), .025f);
         refreshVisuals();
         return true;
     }
@@ -884,7 +1074,6 @@ protected:
         dismissEditor(sender);
     }
 
-    void onFocus(CCObject*) { focusInput(); }
     void onCancel(CCObject*) { dismissEditor(nullptr); }
 
     void onSave(CCObject*) {
@@ -1078,8 +1267,8 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         // Make the whole native icon+caption group noticeably larger. Normal difficulty
         // captions stay native; demon captions are replaced below because the stock frame
         // only says the generic word DEMON.
-        face->setScale(isDemonDifficulty(key) ? .59f : .58f);
-        face->setPosition({36.f, 40.5f});
+        face->setScale(isDemonDifficulty(key) ? .75f : .74f);
+        face->setPosition({36.f, 42.5f});
         face->setOpacity(selected ? 255 : 235);
         tile->addChild(face, 2);
     }
@@ -1088,17 +1277,17 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         // The *_btn demon frames bake the word DEMON into the sprite. Cover the ENTIRE
         // caption band (the previous narrow strip left the top of those letters visible),
         // then draw one exact subtype caption in its place. No duplicate DEMON text remains.
-        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 18.5f);
+        auto* captionMask = CCLayerColor::create(ccc4(72, 40, 28, 255), 72.f, 19.5f);
         if (captionMask) {
-            captionMask->setPosition({0.f, 16.f});
+            captionMask->setPosition({0.f, 17.5f});
             tile->addChild(captionMask, 3);
         }
 
         auto name = difficultyDisplayName(key);
         auto* nameLabel = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
         if (nameLabel) {
-            nameLabel->setScale(name.size() >= 13 ? .178f : .205f);
-            nameLabel->setPosition({36.f, 20.2f});
+            nameLabel->setScale(name.size() >= 13 ? .220f : .238f);
+            nameLabel->setPosition({36.f, 28.2f});
             tile->addChild(nameLabel, 4);
         }
     }
@@ -1108,9 +1297,9 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         auto starText = std::to_string(stars);
         auto* starsLabel = CCLabelBMFont::create(starText.c_str(), "bigFont.fnt");
         if (starsLabel) {
-            starsLabel->setScale(.36f);
+            starsLabel->setScale(.39f);
             starsLabel->setAnchorPoint({1.f, .5f});
-            starsLabel->setPosition({35.2f, 5.8f});
+            starsLabel->setPosition({35.0f, 10.0f});
             tile->addChild(starsLabel, 4);
         }
 
@@ -1118,15 +1307,15 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         if (star) {
             // Larger and optically lowered so the star center sits on the same baseline
             // as the number instead of floating above it.
-            star->setScale(.40f);
-            star->setPosition({46.2f, 4.8f});
+            star->setScale(.50f);
+            star->setPosition({47.2f, 9.7f});
             tile->addChild(star, 4);
         }
     } else if (key == "all") {
         auto* anyLabel = CCLabelBMFont::create("ANY", "bigFont.fnt");
         if (anyLabel) {
             anyLabel->setScale(.30f);
-            anyLabel->setPosition({36.f, 5.8f});
+            anyLabel->setPosition({36.f, 10.0f});
             tile->addChild(anyLabel, 4);
         }
     }
@@ -1135,7 +1324,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected) {
         auto* check = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
         if (check) {
             check->setScale(.30f);
-            check->setPosition({63.f, 52.f});
+            check->setPosition({63.f, 54.f});
             tile->addChild(check, 5);
         }
     }
