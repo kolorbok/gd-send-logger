@@ -1,0 +1,10 @@
+THIS IS THE MOD REPOSITORY ROOT.
+
+Upload/push the CONTENTS of this folder to github.com/kolorbok/gd-send-logger.
+Expected checks before pushing:
+- mod.json version = v2.0.14
+- src/main.cpp contains: FEEDBACK_LIMIT = 500
+- src/main.cpp contains: class DifficultyPickerPopup
+- src/main.cpp contains: EXTREME DEMON
+
+Do not upload the parent bot patch into the Geode repository.
