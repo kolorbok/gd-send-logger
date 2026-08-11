@@ -3,6 +3,7 @@
 #include <Geode/modify/LevelSearchLayer.hpp>
 #include <Geode/modify/LevelBrowserLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
+#include <Geode/modify/LevelCell.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
@@ -64,6 +65,10 @@ struct RequestMeta {
     int difficulty = 0;
     std::string difficultyKey;
     bool rated = false;
+    std::string videoURL;
+    std::string description;
+    std::string reviewLanguage;
+    std::string reviewFlags;
 };
 
 struct ClientState {
@@ -133,6 +138,73 @@ static std::vector<std::string> splitTabs(std::string const& line) {
         out.push_back(line.substr(start, pos - start));
         start = pos + 1;
     }
+    return out;
+}
+
+static std::string unescapeRequestField(std::string const& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        char c = value[i];
+        if (c != '\\' || i + 1 >= value.size()) {
+            out.push_back(c);
+            continue;
+        }
+
+        char escaped = value[++i];
+        if (escaped == 'n') out.push_back('\n');
+        else if (escaped == 'r') out.push_back('\r');
+        else if (escaped == 't') out.push_back('\t');
+        else if (escaped == '\\') out.push_back('\\');
+        else {
+            out.push_back('\\');
+            out.push_back(escaped);
+        }
+    }
+    return out;
+}
+
+static bool hasRequestVideo(std::string const& raw) {
+    auto value = trim(raw);
+    if (value.empty() || value == "0" || value == "None" || value == "none") return false;
+    return value.starts_with("http://") || value.starts_with("https://");
+}
+
+static std::string requestLanguageLabel(std::string raw) {
+    raw = trim(raw);
+    std::transform(raw.begin(), raw.end(), raw.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (raw == "us" || raw == "en" || raw == "english") return "English";
+    if (raw == "ru" || raw == "russian") return "Russian";
+    if (raw == "esp" || raw == "es" || raw == "spanish") return "Spanish";
+    if (raw == "fr" || raw == "french") return "French";
+    return raw.empty() ? "Not specified" : raw;
+}
+
+static std::string requestInfoText(RequestMeta const& meta) {
+    auto review = meta.reviewFlags;
+    std::transform(review.begin(), review.end(), review.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    bool reviewKnown = !review.empty() && review != "0" && review != "none";
+    bool wantsReview = review.find("yes review") != std::string::npos;
+    bool wantsFeedback = review.find("yes feedback") != std::string::npos;
+
+    auto description = trim(meta.description);
+    if (description.empty() || description == "None" || description == "none") description = "None";
+
+    std::string out;
+    out += "Request ID: #" + std::to_string(meta.requestID);
+    out += "\nReview: ";
+    out += reviewKnown ? (wantsReview ? "Yes" : "No") : "Not specified";
+    out += "\nFeedback: ";
+    out += reviewKnown ? (wantsFeedback ? "Yes" : "No") : "Not specified";
+    out += "\nReview language: " + requestLanguageLabel(meta.reviewLanguage);
+    out += "\nVideo: ";
+    out += hasRequestVideo(meta.videoURL) ? "Available" : "None";
+    out += "\n\nDescription:\n" + description;
     return out;
 }
 
@@ -453,6 +525,10 @@ static bool parseRequestsResponse(std::string const& text) {
             meta.difficulty = parseInt(parts[4]);
             meta.difficultyKey = normalizeRequestDifficultyKey(parts.size() >= 7 ? parts[6] : "", meta.difficulty);
             meta.rated = parseInt(parts[5]) != 0;
+            if (parts.size() >= 8) meta.videoURL = unescapeRequestField(parts[7]);
+            if (parts.size() >= 9) meta.description = unescapeRequestField(parts[8]);
+            if (parts.size() >= 10) meta.reviewLanguage = unescapeRequestField(parts[9]);
+            if (parts.size() >= 11) meta.reviewFlags = unescapeRequestField(parts[10]);
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -2206,6 +2282,112 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             g_context = RequestContext{};
         }
         LevelBrowserLayer::onBack(sender);
+    }
+};
+
+class $modify(GDRequestsLevelCell, LevelCell) {
+    struct Fields {
+        RequestMeta request;
+        bool hasRequest = false;
+    };
+
+    void clearRequestDecorations() {
+        if (auto* node = this->getChildByID("kolorbok.gd-send-logger/request-cell-menu")) {
+            node->removeFromParentAndCleanup(true);
+        }
+        if (auto* node = this->getChildByID("kolorbok.gd-send-logger/request-id-label")) {
+            node->removeFromParentAndCleanup(true);
+        }
+        m_fields->request = RequestMeta{};
+        m_fields->hasRequest = false;
+    }
+
+    static CCNode* requestIconOrFallback(char const* frameName, char const* fallbackText, float scale) {
+        if (auto* sprite = CCSprite::createWithSpriteFrameName(frameName)) {
+            sprite->setScale(scale);
+            return sprite;
+        }
+        auto* fallback = ButtonSprite::create(
+            fallbackText, 30, true, "bigFont.fnt", "GJ_button_01.png", 22.f, .75f
+        );
+        fallback->setScale(.62f);
+        return fallback;
+    }
+
+    void addRequestDecorations(RequestMeta const& meta) {
+        auto size = this->getContentSize();
+        float width = size.width > 0.f ? size.width : 356.f;
+        float height = size.height > 0.f ? size.height : 90.f;
+
+        auto* label = CCLabelBMFont::create(
+            ("REQ #" + std::to_string(meta.requestID)).c_str(),
+            "goldFont.fnt"
+        );
+        if (label) {
+            label->setID("kolorbok.gd-send-logger/request-id-label");
+            label->setScale(.28f);
+            label->setOpacity(205);
+            label->setAnchorPoint({1.f, .5f});
+            label->setPosition({width - 6.f, 8.f});
+            this->addChild(label, 30);
+        }
+
+        auto* menu = CCMenu::create();
+        if (!menu) return;
+        menu->setID("kolorbok.gd-send-logger/request-cell-menu");
+        menu->setPosition({0.f, 0.f});
+        menu->setContentSize(size);
+        this->addChild(menu, 31);
+
+        // The vanilla VIEW button is centered roughly 40 px from the right edge of a
+        // 356x90 LevelCell. Keep these two request controls immediately to its left.
+        float y = height * .50f;
+        float infoX = width - 82.f;
+        float youtubeX = width - 105.f;
+
+        auto* infoSprite = requestIconOrFallback("GJ_plusBtn_001.png", "+", .42f);
+        auto* infoButton = CCMenuItemSpriteExtra::create(
+            infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
+        );
+        infoButton->setID("kolorbok.gd-send-logger/request-info-button");
+        infoButton->setSizeMult(1.f);
+        infoButton->setPosition({infoX, y});
+        menu->addChild(infoButton);
+
+        if (hasRequestVideo(meta.videoURL)) {
+            auto* youtubeSprite = requestIconOrFallback("gj_ytIcon_001.png", "YT", .39f);
+            auto* youtubeButton = CCMenuItemSpriteExtra::create(
+                youtubeSprite, this, menu_selector(GDRequestsLevelCell::onRequestVideo)
+            );
+            youtubeButton->setID("kolorbok.gd-send-logger/request-video-button");
+            youtubeButton->setSizeMult(1.f);
+            youtubeButton->setPosition({youtubeX, y});
+            menu->addChild(youtubeButton);
+        }
+    }
+
+    void loadFromLevel(GJGameLevel* level) {
+        LevelCell::loadFromLevel(level);
+        clearRequestDecorations();
+        if (!g_requestBrowserActive || !level) return;
+
+        auto it = g_requestByLevel.find(level->m_levelID);
+        if (it == g_requestByLevel.end()) return;
+
+        m_fields->request = it->second;
+        m_fields->hasRequest = true;
+        addRequestDecorations(m_fields->request);
+    }
+
+    void onRequestInfo(CCObject*) {
+        if (!m_fields->hasRequest) return;
+        auto title = "REQUEST #" + std::to_string(m_fields->request.requestID);
+        showAlert(title, requestInfoText(m_fields->request));
+    }
+
+    void onRequestVideo(CCObject*) {
+        if (!m_fields->hasRequest || !hasRequestVideo(m_fields->request.videoURL)) return;
+        geode::utils::web::openLinkInBrowser(trim(m_fields->request.videoURL));
     }
 };
 
