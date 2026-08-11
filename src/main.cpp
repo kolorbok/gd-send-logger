@@ -2638,12 +2638,14 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
         // Square request buttons use the same visual height as VIEW and a shared gap.
         float buttonSize = viewH;
-        float gap = 5.f;
+        // Keep the three actions visually grouped: YouTube -> request info -> VIEW.
+        // A tiny gap keeps their hit targets distinct while making the buttons nearly touch.
+        float gap = 2.f;
         float viewLeft = viewX - viewW * .5f;
         float infoX = viewLeft - gap - buttonSize * .5f;
         float youtubeX = infoX - buttonSize - gap;
 
-        auto* infoSprite = requestIconOrFallback("GJ_plus2Btn_001.png", "+", buttonSize);
+        auto* infoSprite = requestIconOrFallback("GJ_plus3Btn_001.png", "+", buttonSize);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
