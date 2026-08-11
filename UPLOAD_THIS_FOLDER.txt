@@ -2,7 +2,7 @@ THIS IS THE MOD REPOSITORY ROOT.
 
 Upload/push the CONTENTS of this folder to github.com/kolorbok/gd-send-logger.
 Expected checks before pushing:
-- mod.json version = v2.0.32
+- mod.json version = v2.0.33
 - src/main.cpp contains: FEEDBACK_LIMIT = 1500
 - src/main.cpp contains: class DifficultyPickerPopup
 - src/main.cpp contains: class FeedbackTouchLayer
@@ -20,4 +20,5 @@ Do not upload the bot patch into the Geode repository.
 
 First in-game cursor test: click between two middle characters, type one character, then use Left/Right; both insertion and the visible caret must stay at the same native position.
 
-Request-list test: open Server Requests and confirm each LevelCell shows REQ #..., a + info button, and a YouTube icon only when VideoLink is present.
+Request-list test: open Server Requests and confirm each LevelCell shows REQ #..., square + / YouTube controls aligned from the vanilla VIEW button, and YouTube only when VideoLink is present.
+Request-info test: open + on short/long/Russian descriptions; the popup must stay fixed-size and its content must scroll. Review/Feedback rows must follow RequestReviewStat.

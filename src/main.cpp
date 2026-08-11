@@ -16,6 +16,7 @@
 #include <Geode/utils/async.hpp>
 #include <Geode/utils/NodeIDs.hpp>
 #include <Geode/ui/Popup.hpp>
+#include <Geode/ui/ScrollLayer.hpp>
 #include "api_url.hpp"
 
 #include <algorithm>
@@ -69,6 +70,7 @@ struct RequestMeta {
     std::string description;
     std::string reviewLanguage;
     std::string reviewFlags;
+    std::string reviewMode;
 };
 
 struct ClientState {
@@ -182,30 +184,70 @@ static std::string requestLanguageLabel(std::string raw) {
     return raw.empty() ? "Not specified" : raw;
 }
 
-static std::string requestInfoText(RequestMeta const& meta) {
-    auto review = meta.reviewFlags;
-    std::transform(review.begin(), review.end(), review.begin(), [](unsigned char c) {
+static std::string normalizedRequestReviewMode(RequestMeta const& meta) {
+    auto mode = trim(meta.reviewMode);
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
 
-    bool reviewKnown = !review.empty() && review != "0" && review != "none";
-    bool wantsReview = review.find("yes review") != std::string::npos;
-    bool wantsFeedback = review.find("yes feedback") != std::string::npos;
+    if (mode == "enable review and feedback" || mode == "review_feedback" || mode == "review+feedback") {
+        return "review_feedback";
+    }
+    if (mode == "enable only feedback" || mode == "feedback") return "feedback";
+    if (mode == "enable only review" || mode == "enable" || mode == "review") return "review";
+    if (mode == "disable" || mode == "disabled" || mode == "0" || mode == "none") return "disabled";
 
-    auto description = trim(meta.description);
-    if (description.empty() || description == "None" || description == "none") description = "None";
+    // Backward compatibility with v2.0.32 bridge responses, which did not carry
+    // RequestReviewStat. Infer the form mode from the stored Review value only when possible.
+    auto flags = trim(meta.reviewFlags);
+    std::transform(flags.begin(), flags.end(), flags.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (flags.empty() || flags == "0" || flags == "none") return "disabled";
+    bool mentionsReview = flags.find("review") != std::string::npos;
+    bool mentionsFeedback = flags.find("feedback") != std::string::npos;
+    if (mentionsReview && mentionsFeedback) return "review_feedback";
+    if (mentionsFeedback) return "feedback";
+    return "review";
+}
 
-    std::string out;
-    out += "Request ID: #" + std::to_string(meta.requestID);
-    out += "\nReview: ";
-    out += reviewKnown ? (wantsReview ? "Yes" : "No") : "Not specified";
-    out += "\nFeedback: ";
-    out += reviewKnown ? (wantsFeedback ? "Yes" : "No") : "Not specified";
-    out += "\nReview language: " + requestLanguageLabel(meta.reviewLanguage);
-    out += "\nVideo: ";
-    out += hasRequestVideo(meta.videoURL) ? "Available" : "None";
-    out += "\n\nDescription:\n" + description;
-    return out;
+static bool requestReviewEnabled(RequestMeta const& meta) {
+    auto mode = normalizedRequestReviewMode(meta);
+    return mode == "review" || mode == "review_feedback";
+}
+
+static bool requestFeedbackEnabled(RequestMeta const& meta) {
+    auto mode = normalizedRequestReviewMode(meta);
+    return mode == "feedback" || mode == "review_feedback";
+}
+
+static bool requestWantsReview(RequestMeta const& meta) {
+    if (!requestReviewEnabled(meta)) return false;
+    auto flags = trim(meta.reviewFlags);
+    std::transform(flags.begin(), flags.end(), flags.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (normalizedRequestReviewMode(meta) == "review") {
+        return flags == "yes" || flags.starts_with("yes ") || flags.find("yes review") != std::string::npos;
+    }
+    return flags.find("yes review") != std::string::npos;
+}
+
+static bool requestWantsFeedback(RequestMeta const& meta) {
+    if (!requestFeedbackEnabled(meta)) return false;
+    auto flags = trim(meta.reviewFlags);
+    std::transform(flags.begin(), flags.end(), flags.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (normalizedRequestReviewMode(meta) == "feedback") {
+        return flags == "yes" || flags.starts_with("yes ") || flags.find("yes feedback") != std::string::npos;
+    }
+    return flags.find("yes feedback") != std::string::npos;
+}
+
+static bool hasRequestDescription(std::string const& raw) {
+    auto value = trim(raw);
+    return !value.empty() && value != "0" && value != "None" && value != "none";
 }
 
 static int parseInt(std::string const& value, int fallback = 0) {
@@ -529,6 +571,7 @@ static bool parseRequestsResponse(std::string const& text) {
             if (parts.size() >= 9) meta.description = unescapeRequestField(parts[8]);
             if (parts.size() >= 10) meta.reviewLanguage = unescapeRequestField(parts[9]);
             if (parts.size() >= 11) meta.reviewFlags = unescapeRequestField(parts[10]);
+            if (parts.size() >= 12) meta.reviewMode = unescapeRequestField(parts[11]);
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -2285,6 +2328,231 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     }
 };
 
+class RequestInfoPopup final : public geode::Popup {
+protected:
+    RequestMeta m_meta;
+    CCLabelTTF* m_measureLabel = nullptr;
+
+    static constexpr float POPUP_W = 330.f;
+    static constexpr float POPUP_H = 220.f;
+    static constexpr float SCROLL_X = 22.f;
+    static constexpr float SCROLL_Y = 27.f;
+    static constexpr float SCROLL_W = 286.f;
+    static constexpr float SCROLL_H = 154.f;
+    static constexpr float TEXT_W = SCROLL_W - 20.f;
+    static constexpr float TTF_SIZE = 11.f;
+    static constexpr float TTF_LINE_STEP = 15.f;
+    static constexpr float INFO_LINE_STEP = 15.f;
+
+    float measureUnicode(std::string const& value) {
+        if (!m_measureLabel || value.empty()) return 0.f;
+        m_measureLabel->setString(value.c_str());
+        return m_measureLabel->getContentSize().width;
+    }
+
+    static std::size_t nextUtf8Boundary(std::string const& text, std::size_t index) {
+        if (index >= text.size()) return text.size();
+        auto lead = static_cast<unsigned char>(text[index]);
+        std::size_t step = 1;
+        if ((lead & 0xE0) == 0xC0) step = 2;
+        else if ((lead & 0xF0) == 0xE0) step = 3;
+        else if ((lead & 0xF8) == 0xF0) step = 4;
+        return std::min(text.size(), index + step);
+    }
+
+    std::vector<std::string> breakLongWord(std::string const& word) {
+        std::vector<std::string> pieces;
+        std::string current;
+        for (std::size_t i = 0; i < word.size();) {
+            auto next = nextUtf8Boundary(word, i);
+            auto glyph = word.substr(i, next - i);
+            auto candidate = current + glyph;
+            if (!current.empty() && measureUnicode(candidate) > TEXT_W) {
+                pieces.push_back(current);
+                current = glyph;
+            } else {
+                current = candidate;
+            }
+            i = next;
+        }
+        if (!current.empty()) pieces.push_back(current);
+        if (pieces.empty()) pieces.push_back("");
+        return pieces;
+    }
+
+    std::vector<std::string> wrapUnicode(std::string text) {
+        text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+        std::vector<std::string> lines;
+        std::istringstream paragraphs(text);
+        std::string paragraph;
+        bool readAny = false;
+
+        while (std::getline(paragraphs, paragraph, '\n')) {
+            readAny = true;
+            if (paragraph.empty()) {
+                lines.push_back("");
+                continue;
+            }
+
+            std::istringstream words(paragraph);
+            std::string word;
+            std::string current;
+            while (words >> word) {
+                auto candidate = current.empty() ? word : current + " " + word;
+                if (measureUnicode(candidate) <= TEXT_W) {
+                    current = candidate;
+                    continue;
+                }
+
+                if (!current.empty()) {
+                    lines.push_back(current);
+                    current.clear();
+                }
+
+                if (measureUnicode(word) <= TEXT_W) {
+                    current = word;
+                    continue;
+                }
+
+                auto pieces = breakLongWord(word);
+                for (std::size_t i = 0; i < pieces.size(); ++i) {
+                    if (i + 1 < pieces.size()) lines.push_back(pieces[i]);
+                    else current = pieces[i];
+                }
+            }
+            lines.push_back(current);
+        }
+
+        if (!readAny || lines.empty()) lines.push_back("");
+        return lines;
+    }
+
+    static CCLabelBMFont* makeInfoLabel(std::string const& text) {
+        auto* label = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+        if (!label) return nullptr;
+        label->setScale(.54f);
+        label->setAnchorPoint({0.f, 1.f});
+        label->setColor(ccc3(255, 255, 255));
+        return label;
+    }
+
+    bool initFor(RequestMeta const& meta) {
+        m_meta = meta;
+        if (!Popup::init(POPUP_W, POPUP_H)) return false;
+        auto title = "REQUEST #" + std::to_string(meta.requestID);
+        setTitle(title.c_str(), "goldFont.fnt", .62f, 20.f);
+
+        auto* panel = CCLayerColor::create(ccc4(78, 42, 25, 205), SCROLL_W, SCROLL_H);
+        if (panel) {
+            panel->setPosition({SCROLL_X, SCROLL_Y});
+            m_mainLayer->addChild(panel, 1);
+        }
+
+        m_measureLabel = CCLabelTTF::create("", "Arial", TTF_SIZE);
+        if (!m_measureLabel) return false;
+        m_measureLabel->setVisible(false);
+        m_mainLayer->addChild(m_measureLabel, 0);
+
+        std::vector<std::string> infoLines;
+        if (requestReviewEnabled(meta)) {
+            infoLines.push_back(std::string("Review: ") + (requestWantsReview(meta) ? "Yes" : "No"));
+        }
+        if (requestFeedbackEnabled(meta)) {
+            infoLines.push_back(std::string("Feedback: ") + (requestWantsFeedback(meta) ? "Yes" : "No"));
+        }
+        if ((requestReviewEnabled(meta) || requestFeedbackEnabled(meta))) {
+            auto language = requestLanguageLabel(meta.reviewLanguage);
+            if (!language.empty() && language != "Not specified") {
+                infoLines.push_back("Language: " + language);
+            }
+        }
+
+        auto description = hasRequestDescription(meta.description) ? trim(meta.description) : std::string();
+        auto descriptionLines = description.empty() ? std::vector<std::string>{} : wrapUnicode(description);
+
+        float required = 13.f;
+        required += static_cast<float>(infoLines.size()) * INFO_LINE_STEP;
+        if (!descriptionLines.empty()) {
+            if (!infoLines.empty()) required += 6.f;
+            required += 16.f;
+            required += static_cast<float>(descriptionLines.size()) * TTF_LINE_STEP;
+        }
+        if (infoLines.empty() && descriptionLines.empty()) required += 24.f;
+        required += 10.f;
+        float contentH = std::max(SCROLL_H, required);
+
+        auto* scroll = geode::ScrollLayer::create(CCSize(SCROLL_W, SCROLL_H), true, true);
+        if (!scroll) return false;
+        scroll->setID("kolorbok.gd-send-logger/request-info-scroll");
+        scroll->setPosition({SCROLL_X, SCROLL_Y});
+        scroll->setStealingTouches(true);
+        scroll->m_contentLayer->setContentSize({SCROLL_W, contentH});
+        m_mainLayer->addChild(scroll, 2);
+
+        float y = contentH - 10.f;
+        for (auto const& line : infoLines) {
+            auto* label = makeInfoLabel(line);
+            if (!label) continue;
+            label->setPosition({10.f, y});
+            scroll->m_contentLayer->addChild(label, 2);
+            y -= INFO_LINE_STEP;
+        }
+
+        if (!descriptionLines.empty()) {
+            if (!infoLines.empty()) y -= 4.f;
+            auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
+            if (heading) {
+                heading->setScale(.38f);
+                heading->setAnchorPoint({0.f, 1.f});
+                heading->setPosition({10.f, y});
+                scroll->m_contentLayer->addChild(heading, 2);
+            }
+            y -= 16.f;
+
+            for (auto const& line : descriptionLines) {
+                auto* label = CCLabelTTF::create(line.c_str(), "Arial", TTF_SIZE);
+                if (!label) continue;
+                label->setAnchorPoint({0.f, 1.f});
+                label->setColor(ccc3(255, 255, 255));
+                label->setPosition({10.f, y});
+                scroll->m_contentLayer->addChild(label, 2);
+                y -= TTF_LINE_STEP;
+            }
+        } else if (infoLines.empty()) {
+            auto* empty = makeInfoLabel("No additional request info.");
+            if (empty) {
+                empty->setPosition({10.f, y});
+                scroll->m_contentLayer->addChild(empty, 2);
+            }
+        }
+
+        scroll->scrollToTop();
+
+        if (contentH > SCROLL_H + 1.f) {
+            auto* hint = CCLabelBMFont::create("SCROLL", "goldFont.fnt");
+            if (hint) {
+                hint->setScale(.24f);
+                hint->setOpacity(155);
+                hint->setAnchorPoint({1.f, .5f});
+                hint->setPosition({POPUP_W - 24.f, 18.f});
+                m_mainLayer->addChild(hint, 3);
+            }
+        }
+        return true;
+    }
+
+public:
+    static RequestInfoPopup* create(RequestMeta const& meta) {
+        auto* ret = new RequestInfoPopup();
+        if (ret && ret->initFor(meta)) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+};
+
 class $modify(GDRequestsLevelCell, LevelCell) {
     struct Fields {
         RequestMeta request;
@@ -2292,8 +2560,13 @@ class $modify(GDRequestsLevelCell, LevelCell) {
     };
 
     void clearRequestDecorations() {
-        if (auto* node = this->getChildByID("kolorbok.gd-send-logger/request-cell-menu")) {
-            node->removeFromParentAndCleanup(true);
+        if (m_mainMenu) {
+            for (auto const* id : {
+                "kolorbok.gd-send-logger/request-info-button",
+                "kolorbok.gd-send-logger/request-video-button"
+            }) {
+                if (auto* node = m_mainMenu->getChildByID(id)) node->removeFromParentAndCleanup(true);
+            }
         }
         if (auto* node = this->getChildByID("kolorbok.gd-send-logger/request-id-label")) {
             node->removeFromParentAndCleanup(true);
@@ -2302,22 +2575,37 @@ class $modify(GDRequestsLevelCell, LevelCell) {
         m_fields->hasRequest = false;
     }
 
-    static CCNode* requestIconOrFallback(char const* frameName, char const* fallbackText, float scale) {
+    static CCNode* requestIconOrFallback(
+        char const* frameName,
+        char const* fallbackText,
+        float targetHeight
+    ) {
         if (auto* sprite = CCSprite::createWithSpriteFrameName(frameName)) {
-            sprite->setScale(scale);
+            auto size = sprite->getContentSize();
+            if (size.height > 0.f) sprite->setScale(targetHeight / size.height);
             return sprite;
         }
         auto* fallback = ButtonSprite::create(
-            fallbackText, 30, true, "bigFont.fnt", "GJ_button_01.png", 22.f, .75f
+            fallbackText, 34, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .76f
         );
-        fallback->setScale(.62f);
+        auto size = fallback->getContentSize();
+        if (size.height > 0.f) fallback->setScale(targetHeight / size.height);
         return fallback;
+    }
+
+    static float displayedWidth(CCNode* node) {
+        if (!node) return 0.f;
+        return node->getContentSize().width * std::fabs(node->getScaleX());
+    }
+
+    static float displayedHeight(CCNode* node) {
+        if (!node) return 0.f;
+        return node->getContentSize().height * std::fabs(node->getScaleY());
     }
 
     void addRequestDecorations(RequestMeta const& meta) {
         auto size = this->getContentSize();
         float width = size.width > 0.f ? size.width : 356.f;
-        float height = size.height > 0.f ? size.height : 90.f;
 
         auto* label = CCLabelBMFont::create(
             ("REQ #" + std::to_string(meta.requestID)).c_str(),
@@ -2332,42 +2620,57 @@ class $modify(GDRequestsLevelCell, LevelCell) {
             this->addChild(label, 30);
         }
 
-        auto* menu = CCMenu::create();
-        if (!menu) return;
-        menu->setID("kolorbok.gd-send-logger/request-cell-menu");
-        menu->setPosition({0.f, 0.f});
-        menu->setContentSize(size);
-        this->addChild(menu, 31);
+        if (!m_mainMenu) return;
+        NodeIDs::provideFor(this);
+        auto* viewButton = typeinfo_cast<CCMenuItemSpriteExtra*>(m_mainMenu->getChildByID("view-button"));
 
-        // The vanilla VIEW button is centered roughly 40 px from the right edge of a
-        // 356x90 LevelCell. Keep these two request controls immediately to its left.
-        float y = height * .50f;
-        float infoX = width - 82.f;
-        float youtubeX = width - 105.f;
+        // Use the real vanilla VIEW button as the anchor instead of hard-coded cell offsets.
+        // This keeps request controls aligned when GD / NodeIDs / texture packs resize VIEW.
+        float y = viewButton ? viewButton->getPositionY() : 45.f;
+        float viewX = viewButton ? viewButton->getPositionX() : width - 40.f;
+        CCNode* viewVisual = viewButton ? viewButton->getNormalImage() : nullptr;
+        float viewScaleX = viewButton ? std::fabs(viewButton->getScaleX()) : 1.f;
+        float viewScaleY = viewButton ? std::fabs(viewButton->getScaleY()) : 1.f;
+        float viewW = viewVisual ? displayedWidth(viewVisual) * viewScaleX : (viewButton ? displayedWidth(viewButton) : 72.f);
+        float viewH = viewVisual ? displayedHeight(viewVisual) * viewScaleY : (viewButton ? displayedHeight(viewButton) : 38.f);
+        if (viewH < 20.f || viewH > 60.f) viewH = 38.f;
+        if (viewW < 35.f || viewW > 120.f) viewW = 72.f;
 
-        auto* infoSprite = requestIconOrFallback("GJ_plusBtn_001.png", "+", .42f);
+        // Square request buttons use the same visual height as VIEW and a shared gap.
+        float buttonSize = viewH;
+        float gap = 5.f;
+        float viewLeft = viewX - viewW * .5f;
+        float infoX = viewLeft - gap - buttonSize * .5f;
+        float youtubeX = infoX - buttonSize - gap;
+
+        auto* infoSprite = requestIconOrFallback("GJ_plus2Btn_001.png", "+", buttonSize);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
-        infoButton->setID("kolorbok.gd-send-logger/request-info-button");
-        infoButton->setSizeMult(1.f);
-        infoButton->setPosition({infoX, y});
-        menu->addChild(infoButton);
+        if (infoButton) {
+            infoButton->setID("kolorbok.gd-send-logger/request-info-button");
+            infoButton->setSizeMult(1.f);
+            infoButton->setPosition({infoX, y});
+            m_mainMenu->addChild(infoButton);
+        }
 
         if (hasRequestVideo(meta.videoURL)) {
-            auto* youtubeSprite = requestIconOrFallback("gj_ytIcon_001.png", "YT", .39f);
+            auto* youtubeSprite = requestIconOrFallback("gj_ytIcon_001.png", "YT", buttonSize);
             auto* youtubeButton = CCMenuItemSpriteExtra::create(
                 youtubeSprite, this, menu_selector(GDRequestsLevelCell::onRequestVideo)
             );
-            youtubeButton->setID("kolorbok.gd-send-logger/request-video-button");
-            youtubeButton->setSizeMult(1.f);
-            youtubeButton->setPosition({youtubeX, y});
-            menu->addChild(youtubeButton);
+            if (youtubeButton) {
+                youtubeButton->setID("kolorbok.gd-send-logger/request-video-button");
+                youtubeButton->setSizeMult(1.f);
+                youtubeButton->setPosition({youtubeX, y});
+                m_mainMenu->addChild(youtubeButton);
+            }
         }
     }
 
     void loadFromLevel(GJGameLevel* level) {
         LevelCell::loadFromLevel(level);
+        NodeIDs::provideFor(this);
         clearRequestDecorations();
         if (!g_requestBrowserActive || !level) return;
 
@@ -2381,8 +2684,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
     void onRequestInfo(CCObject*) {
         if (!m_fields->hasRequest) return;
-        auto title = "REQUEST #" + std::to_string(m_fields->request.requestID);
-        showAlert(title, requestInfoText(m_fields->request));
+        if (auto* popup = RequestInfoPopup::create(m_fields->request)) popup->show();
     }
 
     void onRequestVideo(CCObject*) {
