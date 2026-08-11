@@ -59,6 +59,19 @@ jobs:
           PY
 
       - name: Build the mod
+        id: build_primary
+        continue-on-error: true
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: given
+          combine: true
+          target: ${{ matrix.config.target }}
+
+      # Geode CLI occasionally gets a malformed/transient release response while
+      # installing SDK binaries (the Windows runner hit this for v5.6.1). Retry the
+      # exact same build once instead of losing the whole multi-platform build.
+      - name: Retry build after transient SDK failure
+        if: steps.build_primary.outcome == 'failure'
         uses: geode-sdk/build-geode-mod@main
         with:
           sdk: given

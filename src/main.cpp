@@ -2636,16 +2636,24 @@ class $modify(GDRequestsLevelCell, LevelCell) {
         if (viewH < 20.f || viewH > 60.f) viewH = 38.f;
         if (viewW < 35.f || viewW > 120.f) viewW = 72.f;
 
-        // Square request buttons use the same visual height as VIEW and a shared gap.
+        // Request buttons use the same visual height as VIEW and a shared tiny gap.
         float buttonSize = viewH;
-        // Keep the three actions visually grouped: YouTube -> request info -> VIEW.
-        // A tiny gap keeps their hit targets distinct while making the buttons nearly touch.
         float gap = 2.f;
         float viewLeft = viewX - viewW * .5f;
-        float infoX = viewLeft - gap - buttonSize * .5f;
-        float youtubeX = infoX - buttonSize - gap;
+        bool hasVideo = hasRequestVideo(meta.videoURL);
 
-        auto* infoSprite = requestIconOrFallback("GJ_plus3Btn_001.png", "+", buttonSize);
+        // Layout requested for Server Requests:
+        //   with video:  [+] [YouTube] [VIEW]
+        //   no video:                [+] [VIEW]
+        // Keep the control nearest VIEW anchored to VIEW itself, so texture packs / GET IT
+        // variants keep the whole group aligned.
+        float nearestX = viewLeft - gap - buttonSize * .5f;
+        float youtubeX = nearestX;
+        float infoX = hasVideo ? (youtubeX - buttonSize - gap) : nearestX;
+
+        // Revert to the v2.0.33 plus texture; the v2.0.34 square GameSheet03 plus
+        // was not the desired icon in-game.
+        auto* infoSprite = requestIconOrFallback("GJ_plus2Btn_001.png", "+", buttonSize);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
@@ -2656,7 +2664,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
             m_mainMenu->addChild(infoButton);
         }
 
-        if (hasRequestVideo(meta.videoURL)) {
+        if (hasVideo) {
             auto* youtubeSprite = requestIconOrFallback("gj_ytIcon_001.png", "YT", buttonSize);
             auto* youtubeButton = CCMenuItemSpriteExtra::create(
                 youtubeSprite, this, menu_selector(GDRequestsLevelCell::onRequestVideo)
