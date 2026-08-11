@@ -2454,6 +2454,23 @@ protected:
         m_mainLayer->addChild(m_measureLabel, 0);
 
         std::vector<std::string> infoLines;
+
+        // Show the difficulty the requester actually selected/requested.
+        // The bridge already derives difficulty/difficultyKey from the requested part of
+        // Sheet.LevelDifficulty, so a suffix such as "(4 in-game)" is intentionally not
+        // shown here. For paired difficulties (4/5, 6/7, 8/9) keep the exact star count.
+        if (!meta.difficultyKey.empty() || meta.difficulty > 0) {
+            auto difficultyName = difficultyDisplayName(meta.difficultyKey);
+            if (difficultyName.empty()) difficultyName = "UNKNOWN";
+
+            std::string difficultyLine = "Requested difficulty: " + difficultyName;
+            if (meta.difficulty > 0) {
+                difficultyLine += " (" + std::to_string(meta.difficulty);
+                difficultyLine += meta.difficulty == 1 ? " STAR)" : " STARS)";
+            }
+            infoLines.push_back(difficultyLine);
+        }
+
         if (requestReviewEnabled(meta)) {
             infoLines.push_back(std::string("Review: ") + (requestWantsReview(meta) ? "Yes" : "No"));
         }

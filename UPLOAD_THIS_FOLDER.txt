@@ -2,7 +2,7 @@ THIS IS THE MOD REPOSITORY ROOT.
 
 Upload/push the CONTENTS of this folder to github.com/kolorbok/gd-send-logger.
 Expected checks before pushing:
-- mod.json version = v2.0.33
+- mod.json version = v2.0.36
 - src/main.cpp contains: FEEDBACK_LIMIT = 1500
 - src/main.cpp contains: class DifficultyPickerPopup
 - src/main.cpp contains: class FeedbackTouchLayer
