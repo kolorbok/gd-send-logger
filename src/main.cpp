@@ -2245,6 +2245,8 @@ struct SubmitRequestState {
     std::atomic_bool active{true};
     std::function<void()> restoreHostClose;
     std::function<void()> resetNoPingVisual;
+    bool submittedNoPing = false;
+    int requestID = 0;
 };
 
 class SubmitUploadDelegate final : public UploadPopupDelegate {
@@ -2261,7 +2263,9 @@ static std::shared_ptr<SubmitRequestState> showSubmitLoading(
     CCNode* host,
     char const* title,
     std::function<void()> restoreHostClose = {},
-    std::function<void()> resetNoPingVisual = {}
+    std::function<void()> resetNoPingVisual = {},
+    bool submittedNoPing = false,
+    int requestID = 0
 ) {
     if (!host || g_submitLoadingPopup) return nullptr;
 
@@ -2277,6 +2281,8 @@ static std::shared_ptr<SubmitRequestState> showSubmitLoading(
     g_submitRequestState = std::make_shared<SubmitRequestState>();
     g_submitRequestState->restoreHostClose = std::move(restoreHostClose);
     g_submitRequestState->resetNoPingVisual = std::move(resetNoPingVisual);
+    g_submitRequestState->submittedNoPing = submittedNoPing;
+    g_submitRequestState->requestID = requestID;
     g_submitLoadingPopup = popup;
     g_submitLoadingHost = host;
 
@@ -2357,12 +2363,14 @@ static void postRequestAction(
     SendSnapshot snapshot,
     CCNode* loadingHost,
     std::function<void()> restoreHostClose = {},
-    std::function<void()> resetNoPingVisual = {}
+    std::function<void()> resetNoPingVisual = {},
+    bool submittedNoPing = false,
+    int submittedRequestID = 0
 ) {
     auto key = connectionKey();
     if (key.empty() || !context.active || context.request.requestID <= 0) return;
 
-    auto state = showSubmitLoading(loadingHost, "Submitting...", std::move(restoreHostClose), std::move(resetNoPingVisual));
+    auto state = showSubmitLoading(loadingHost, "Submitting...", std::move(restoreHostClose), std::move(resetNoPingVisual), submittedNoPing, submittedRequestID);
     if (!state) return;
 
     auto body = matjson::Value();
@@ -2397,7 +2405,10 @@ static void postRequestAction(
 
             if (res.ok()) {
                 g_feedbackDrafts.erase(requestID);
-                g_noPingDrafts.erase(requestID);
+                auto np = g_noPingDrafts.find(requestID);
+                if (np != g_noPingDrafts.end() && np->second == state->submittedNoPing) {
+                    g_noPingDrafts.erase(np);
+                }
                 if (state->resetNoPingVisual) state->resetNoPingVisual();
 
                 if (g_submitRequestState != state || !g_submitLoadingPopup) return;
@@ -2597,9 +2608,16 @@ protected:
         auto reason = m_reason;
         // The Reject Reason popup never shows its own frame X. Closing the
         // native UploadActionPopup simply returns here and Submit can be used again.
-        postRequestAction(context, "reject", reason, {}, this, {}, [this]() {
-            if (m_noPingToggle) m_noPingToggle->toggle(false);
-        });
+        bool submittedNoPing = m_noPingToggle && m_noPingToggle->isToggled();
+        int submittedRequestID = context.request.requestID;
+        postRequestAction(context, "reject", reason, {}, this, {}, [this, submittedNoPing, submittedRequestID]() {
+            // Only reset the checkbox if the user has not changed it while the request was loading.
+            // Otherwise an old request finishing could overwrite the choice for the next request.
+            if (m_context.request.requestID == submittedRequestID && m_noPingToggle &&
+                m_noPingToggle->isToggled() == submittedNoPing) {
+                m_noPingToggle->toggle(false);
+            }
+        }, {}, submittedNoPing, submittedRequestID);
     }
 
     void onExit() override {
@@ -3869,9 +3887,16 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
             if (m_fields->noPingToggle) {
                 setNoPingFor(context, m_fields->noPingToggle->isToggled());
             }
-            postRequestAction(context, "send", "", snapshot, this, {}, [this]() {
-                if (m_fields->noPingToggle) m_fields->noPingToggle->toggle(false);
-            });
+            bool submittedNoPing = m_fields->noPingToggle && m_fields->noPingToggle->isToggled();
+            int submittedRequestID = context.request.requestID;
+            postRequestAction(context, "send", "", snapshot, this, {}, [this, submittedNoPing, submittedRequestID]() {
+                // Do not let completion of an older submission reset a checkbox that the user
+                // already changed for the next submission.
+                if (m_fields->requestContext.request.requestID == submittedRequestID &&
+                    m_fields->noPingToggle && m_fields->noPingToggle->isToggled() == submittedNoPing) {
+                    m_fields->noPingToggle->toggle(false);
+                }
+            }, {}, submittedNoPing, submittedRequestID);
             return;
         }
 
