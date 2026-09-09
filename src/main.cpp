@@ -1255,9 +1255,23 @@ protected:
     }
 
     void setNativeCursorFromByte(std::size_t byteOffset) {
-        // The native field is intentionally kept empty. Its only job is to own the OS IME
-        // connection; all text and cursor state live in our UTF-8 buffer.
-        m_cursorByte = clampUtf8Boundary(m_value, byteOffset);
+        byteOffset = clampUtf8Boundary(m_value, byteOffset);
+        m_cursorByte = byteOffset;
+
+        // Keep the hidden native TextInput synchronized with the real Feedback value.
+        // It still remains visually off-screen and our custom buffer remains authoritative,
+        // but Android's IME needs a real string/cursor to perform Backspace/Delete correctly.
+        if (m_input) {
+            auto* node = m_input->getInputNode();
+            if (node && node->m_textField) {
+                auto nativeValue = gdToStd(m_input->getString());
+                if (nativeValue != m_value) {
+                    m_input->setString(gd::string(m_value.c_str()), false);
+                }
+                node->m_textField->m_uCursorPos = static_cast<int>(byteOffset);
+                node->updateBlinkLabel();
+            }
+        }
     }
 
     void syncNativeCursor(float) {}
@@ -1276,6 +1290,7 @@ protected:
         if (insertion.empty()) return;
         m_value.insert(m_cursorByte, insertion);
         m_cursorByte += insertion.size();
+        setNativeCursorFromByte(m_cursorByte);
         refreshVisuals();
     }
 
@@ -1285,6 +1300,7 @@ protected:
         while (previous > 0 && (static_cast<unsigned char>(m_value[previous]) & 0xC0) == 0x80) --previous;
         m_value.erase(previous, m_cursorByte - previous);
         m_cursorByte = previous;
+        setNativeCursorFromByte(m_cursorByte);
         refreshVisuals();
     }
 
@@ -1292,6 +1308,7 @@ protected:
         if (m_cursorByte >= m_value.size()) return;
         auto next = nextUtf8Boundary(m_value, m_cursorByte);
         m_value.erase(m_cursorByte, next - m_cursorByte);
+        setNativeCursorFromByte(m_cursorByte);
         refreshVisuals();
     }
 
