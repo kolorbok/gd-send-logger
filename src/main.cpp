@@ -1609,12 +1609,12 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
         CCTextInputNode::deleteForward();
     }
 
-    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender) {
+    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender, const char* delText, int nLen) {
         if (this == g_feedbackIMEInput) {
             if (g_feedbackIMEBackspace) g_feedbackIMEBackspace();
             return true;
         }
-        return CCTextInputNode::onTextFieldDeleteBackward(sender);
+        return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
     }
 };
 
