@@ -929,7 +929,7 @@ class FeedbackPopup;
 static CCTextInputNode* g_feedbackIMEInput = nullptr;
 static std::function<void(std::string const&)> g_feedbackIMEInsert;
 static std::function<void()> g_feedbackIMEBackspace;
-static std::function<void()> g_feedbackIMEDeleteForward;
+static std::function<void()> g_feedbackIMEDelete;
 
 class FeedbackPopup final : public geode::Popup {
 protected:
@@ -1476,7 +1476,7 @@ protected:
         g_feedbackIMEInput = m_input->getInputNode();
         g_feedbackIMEInsert = [this](std::string const& text) { this->handleNativeInsert(text); };
         g_feedbackIMEBackspace = [this]() { this->eraseBackward(); };
-        g_feedbackIMEDeleteForward = [this]() { this->eraseForward(); };
+        g_feedbackIMEDelete = [this]() { this->eraseForward(); };
         this->setKeyboardEnabled(true);
         m_keyboardListener = geode::KeyboardInputEvent().listen(
             [this](geode::KeyboardInputData& data) { return this->handleKeyboardEvent(data); },
@@ -1544,8 +1544,6 @@ protected:
         if (g_feedbackIMEInput == (m_input ? m_input->getInputNode() : nullptr)) {
             g_feedbackIMEInput = nullptr;
             g_feedbackIMEInsert = {};
-            g_feedbackIMEBackspace = {};
-            g_feedbackIMEDeleteForward = {};
         }
         if (m_input) m_input->defocus();
         m_focused = false;
@@ -1585,13 +1583,7 @@ public:
 };
 
 class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
-    // IME path: Geode/Cocos sends composed Unicode text through CCIMEDelegate::insertText.
-    // This is the path used by real keyboard layouts/IME, while onTextFieldInsertText is
-    // also kept below for paste and platforms which deliver text through the text field.
     void insertText(char const* text, int len, enumKeyCodes keyCodes) {
-        // FeedbackPopup is edited from KeyboardInputEvent. Letting Cocos also
-        // insert the same text here causes every key to appear twice (and
-        // non-English layouts can produce the old garbled character as well).
         if (this == g_feedbackIMEInput) {
             if (g_feedbackIMEInsert && text && len > 0) {
                 g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(len)));
@@ -1602,16 +1594,16 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
     }
 
     void deleteBackward() {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEBackspace) g_feedbackIMEBackspace();
+        if (this == g_feedbackIMEInput && g_feedbackIMEBackspace) {
+            g_feedbackIMEBackspace();
             return;
         }
         CCTextInputNode::deleteBackward();
     }
 
     void deleteForward() {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEDeleteForward) g_feedbackIMEDeleteForward();
+        if (this == g_feedbackIMEInput && g_feedbackIMEDelete) {
+            g_feedbackIMEDelete();
             return;
         }
         CCTextInputNode::deleteForward();
@@ -1619,7 +1611,9 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     bool onTextFieldInsertText(CCTextFieldTTF* sender, char const* text, int nLen, enumKeyCodes keyCodes) {
         if (this == g_feedbackIMEInput) {
-            // KeyboardInputEvent already handles the feedback editor.
+            if (g_feedbackIMEInsert && text && nLen > 0) {
+                g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(nLen)));
+            }
             return true;
         }
         return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
