@@ -589,7 +589,7 @@ static void setNoPingFor(RequestContext const& context, bool value) {
     g_noPingDrafts[context.request.requestID] = value;
 }
 
-static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, RequestContext const* context = nullptr) {
+static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, RequestContext const* context = nullptr, bool const* noPingOverride = nullptr) {
     auto body = matjson::Value();
     body["eventId"] = makeEventID(snapshot, isTest);
     body["levelId"] = snapshot.levelID;
@@ -607,12 +607,12 @@ static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, Re
         body["requestEvent"] = context->request.event;
         auto feedback = feedbackFor(*context);
         if (!feedback.empty()) body["feedback"] = feedback.substr(0, FEEDBACK_LIMIT);
-        body["noPing"] = noPingFor(*context);
+        body["noPing"] = noPingOverride ? *noPingOverride : noPingFor(*context);
     }
     return body;
 }
 
-static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContext const* context = nullptr) {
+static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContext const* context = nullptr, bool const* noPingOverride = nullptr) {
     if (!isTest && !Mod::get()->getSettingValue<bool>("enabled")) return;
     if (snapshot.levelID <= 0 || snapshot.stars <= 0 || snapshot.stars > 10) {
         if (debugLogging() || isTest) {
@@ -633,7 +633,7 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
         return;
     }
 
-    auto body = buildPayload(snapshot, isTest, context);
+    auto body = buildPayload(snapshot, isTest, context, noPingOverride);
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
@@ -3931,6 +3931,7 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         bool submittedNoPing = m_fields->hasPendingModeratorNoPing
             ? m_fields->pendingModeratorNoPing
             : (m_fields->noPingToggle && m_fields->noPingToggle->isToggled());
+        bool hasSubmittedNoPing = m_fields->hasPendingModeratorNoPing;
         m_fields->hasPendingModeratorNoPing = false;
 
         if (debugLogging()) {
@@ -3938,15 +3939,19 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         }
 
         if (wasModerator && !m_fields->helperRequestPopup) {
-            // reportSend() builds the Discord payload. Keep the NO PING value from
-            // the original Submit click instead of the current checkbox state.
-            setNoPingFor(captured, submittedNoPing);
-            reportSend(snapshot, false, captured.active && captured.mode == "moderator" ? &captured : nullptr);
+            // Use only the immutable NO PING snapshot captured at the exact Submit click.
+            // Never read or modify the checkbox here: the user may already be preparing
+            // another request while Geometry Dash finishes the previous upload.
+            auto* noPingOverride = hasSubmittedNoPing ? &submittedNoPing : nullptr;
+            reportSend(snapshot, false, captured.active && captured.mode == "moderator" ? &captured : nullptr, noPingOverride);
         }
         RateStarsLayer::uploadActionFinished(id, response);
     }
 
     void uploadActionFailed(int id, int response) override {
+        if (m_moderator && !m_fields->helperRequestPopup) {
+            m_fields->hasPendingModeratorNoPing = false;
+        }
         if (m_moderator && debugLogging()) {
             log::warn("Moderator send failed in GD: id={}, response={}, levelID={}, stars={}, featureState={}",
                 id, response, m_levelID, m_starsRate, m_featureState);
