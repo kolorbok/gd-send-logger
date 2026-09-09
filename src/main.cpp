@@ -1,6 +1,7 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/RateStarsLayer.hpp>
 #include <Geode/modify/CCTextInputNode.hpp>
+#include <Geode/modify/CCTextFieldTTF.hpp>
 #include <Geode/modify/LevelSearchLayer.hpp>
 #include <Geode/modify/LevelBrowserLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
