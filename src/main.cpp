@@ -2327,10 +2327,20 @@ static void invalidateSubmitLoading(CCNode* host) {
     g_submitLoadingHost = nullptr;
     // Do not restore the parent's X here: this path runs while the parent is
     // leaving the scene and its controls may already be in destruction.
+    // Also do NOT close UploadActionPopup synchronously from the parent's
+    // onExit(): doing so re-enters FLAlertLayer destruction and can crash GD.
     g_submitRequestState.reset();
 
-    // Clear globals before closing so UploadActionPopup's delegate cannot recurse.
-    if (popup) popup->closePopup();
+    if (popup) {
+        // Keep the native popup alive until the parent has finished leaving the
+        // scene, then close it on the main thread. The globals are already clear,
+        // so the delegate cannot try to touch the destroyed parent popup.
+        popup->retain();
+        geode::queueInMainThread([popup]() {
+            popup->closePopup();
+            popup->release();
+        });
+    }
 }
 
 static void postRequestAction(
@@ -2503,6 +2513,11 @@ protected:
         m_context = context;
         if (!Popup::init(400.f, 190.f)) return false;
 
+        // This popup is intentionally closed only with its Cancel button. Its
+        // native frame X must never be visible; the temporary UploadActionPopup
+        // has its own native X while a request is being submitted.
+        if (m_closeBtn) m_closeBtn->setVisible(false);
+
         char const* title = context.mode == "helper" ? "Helper: Reject Reason" : "Mod: Reject Reason";
         // Keep the native GD popup-title style and fit the longer Helper title inside the frame.
         setTitle(title, "bigFont.fnt", context.mode == "helper" ? 0.92f : .94f, 25.f);
@@ -2569,11 +2584,9 @@ protected:
         }
         auto context = m_context;
         auto reason = m_reason;
-        auto restoreClose = [this]() {
-            if (m_closeBtn) m_closeBtn->setVisible(true);
-        };
-        if (m_closeBtn) m_closeBtn->setVisible(false);
-        postRequestAction(context, "reject", reason, {}, this, std::move(restoreClose));
+        // The Reject Reason popup never shows its own frame X. Closing the
+        // native UploadActionPopup simply returns here and Submit can be used again.
+        postRequestAction(context, "reject", reason, {}, this);
     }
 
     void onExit() override {
