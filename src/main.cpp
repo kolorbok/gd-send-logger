@@ -2591,7 +2591,7 @@ protected:
 
     void onExit() override {
         invalidateSubmitLoading(this);
-        RejectPopup::onExit();
+        Popup::onExit();
     }
 
 public:
