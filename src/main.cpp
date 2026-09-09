@@ -928,6 +928,8 @@ public:
 class FeedbackPopup;
 static CCTextInputNode* g_feedbackIMEInput = nullptr;
 static std::function<void(std::string const&)> g_feedbackIMEInsert;
+static std::function<void()> g_feedbackIMEBackspace;
+static std::function<void()> g_feedbackIMEDeleteForward;
 
 class FeedbackPopup final : public geode::Popup {
 protected:
@@ -1473,6 +1475,8 @@ protected:
         m_mainLayer->addChild(m_input, 0);
         g_feedbackIMEInput = m_input->getInputNode();
         g_feedbackIMEInsert = [this](std::string const& text) { this->handleNativeInsert(text); };
+        g_feedbackIMEBackspace = [this]() { this->eraseBackward(); };
+        g_feedbackIMEDeleteForward = [this]() { this->eraseForward(); };
         this->setKeyboardEnabled(true);
         m_keyboardListener = geode::KeyboardInputEvent().listen(
             [this](geode::KeyboardInputData& data) { return this->handleKeyboardEvent(data); },
@@ -1540,6 +1544,8 @@ protected:
         if (g_feedbackIMEInput == (m_input ? m_input->getInputNode() : nullptr)) {
             g_feedbackIMEInput = nullptr;
             g_feedbackIMEInsert = {};
+            g_feedbackIMEBackspace = {};
+            g_feedbackIMEDeleteForward = {};
         }
         if (m_input) m_input->defocus();
         m_focused = false;
@@ -1587,20 +1593,27 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
         // insert the same text here causes every key to appear twice (and
         // non-English layouts can produce the old garbled character as well).
         if (this == g_feedbackIMEInput) {
+            if (g_feedbackIMEInsert && text && len > 0) {
+                g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(len)));
+            }
             return;
         }
         CCTextInputNode::insertText(text, len, keyCodes);
     }
 
     void deleteBackward() {
-        if (this == g_feedbackIMEInput && g_feedbackIMEInsert) {
-            // Empty insertion is not used as a deletion signal; the popup handles this
-            // through the dedicated IME delegate callback below.
+        if (this == g_feedbackIMEInput) {
+            if (g_feedbackIMEBackspace) g_feedbackIMEBackspace();
+            return;
         }
         CCTextInputNode::deleteBackward();
     }
 
     void deleteForward() {
+        if (this == g_feedbackIMEInput) {
+            if (g_feedbackIMEDeleteForward) g_feedbackIMEDeleteForward();
+            return;
+        }
         CCTextInputNode::deleteForward();
     }
 
