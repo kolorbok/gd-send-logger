@@ -926,10 +926,6 @@ public:
 };
 
 class FeedbackPopup;
-static CCTextInputNode* g_feedbackIMEInput = nullptr;
-static std::function<void(std::string const&)> g_feedbackIMEInsert;
-static std::function<void()> g_feedbackIMEBackspace;
-static std::function<void()> g_feedbackIMEDelete;
 
 class FeedbackPopup final : public geode::Popup {
 protected:
@@ -1274,7 +1270,14 @@ protected:
         }
     }
 
-    void syncNativeCursor(float) {}
+    void syncNativeCursor(float) {
+        if (!m_focused || !m_input) return;
+        auto cursorByte = nativeCursorByteOffset();
+        if (cursorByte != m_cursorByte) {
+            m_cursorByte = cursorByte;
+            renderText();
+        }
+    }
 
     void settleNativeCursor(float) {
         setNativeCursorFromByte(m_cursorByte);
@@ -1487,13 +1490,13 @@ protected:
         m_input->setTextAlign(geode::TextInputAlign::Left);
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
-        m_input->setString(gd::string(""), false);
-        m_input->setCallback([this](std::string const&) {});
-        m_mainLayer->addChild(m_input, 0);
-        g_feedbackIMEInput = m_input->getInputNode();
-        g_feedbackIMEInsert = [this](std::string const& text) { this->handleNativeInsert(text); };
-        g_feedbackIMEBackspace = [this]() { this->eraseBackward(); };
-        g_feedbackIMEDelete = [this]() { this->eraseForward(); };
+        // Keep the native TextInput as the real IME/editing buffer. This is important on
+        // Android: Backspace/Delete are applied by CCTextFieldTTF and then reported through
+        // TextInput's callback. The visible multiline editor mirrors that value.
+        m_input->setString(gd::string(m_value.c_str()), false);
+        m_input->setCallback([this](std::string const& value) {
+            this->setValueFromInput(value);
+        });
         this->setKeyboardEnabled(true);
         m_keyboardListener = geode::KeyboardInputEvent().listen(
             [this](geode::KeyboardInputData& data) { return this->handleKeyboardEvent(data); },
@@ -1558,10 +1561,6 @@ protected:
     }
 
     void dismissEditor(CCObject* sender = nullptr) {
-        if (g_feedbackIMEInput == (m_input ? m_input->getInputNode() : nullptr)) {
-            g_feedbackIMEInput = nullptr;
-            g_feedbackIMEInsert = {};
-        }
         if (m_input) m_input->defocus();
         m_focused = false;
         if (m_caret) {
@@ -1599,55 +1598,6 @@ public:
     }
 };
 
-class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
-    void insertText(char const* text, int len, enumKeyCodes keyCodes) {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEInsert && text && len > 0) {
-                g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(len)));
-            }
-            return;
-        }
-        CCTextInputNode::insertText(text, len, keyCodes);
-    }
-
-    void deleteBackward() {
-        if (this == g_feedbackIMEInput && g_feedbackIMEBackspace) {
-            g_feedbackIMEBackspace();
-            return;
-        }
-        CCTextInputNode::deleteBackward();
-    }
-
-    void deleteForward() {
-        if (this == g_feedbackIMEInput && g_feedbackIMEDelete) {
-            g_feedbackIMEDelete();
-            return;
-        }
-        CCTextInputNode::deleteForward();
-    }
-
-    bool onTextFieldInsertText(CCTextFieldTTF* sender, char const* text, int nLen, enumKeyCodes keyCodes) {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEInsert && text && nLen > 0) {
-                g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(nLen)));
-            }
-            return true;
-        }
-        return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
-    }
-
-    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender, char const* delText, int nLen) {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEBackspace) {
-                g_feedbackIMEBackspace();
-            }
-            // The hidden native field is only an IME host; its own text must not be
-            // modified. The visible FeedbackPopup owns the actual UTF-8 buffer.
-            return true;
-        }
-        return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
-    }
-};
 
 static void openFeedbackEditor(RequestContext const& context) {
     if (!context.active || context.request.requestID <= 0) return;
