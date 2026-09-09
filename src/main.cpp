@@ -1260,10 +1260,6 @@ protected:
         if (m_input) {
             auto* node = m_input->getInputNode();
             if (node && node->m_textField) {
-                auto nativeValue = gdToStd(m_input->getString());
-                if (nativeValue != m_value) {
-                    m_input->setString(gd::string(m_value.c_str()), false);
-                }
                 node->m_textField->m_uCursorPos = static_cast<int>(byteOffset);
                 node->updateBlinkLabel();
             }
@@ -1346,12 +1342,27 @@ protected:
         insertUtf8AtCursor(text);
     }
 
-    void setValueFromInput(std::string const&) {
-        // Kept for compatibility with the TextInput callback; native text is not authoritative.
+    void setValueFromInput(std::string const& value) {
+        auto next = value;
+        truncateUtf8ToChars(next, FEEDBACK_LIMIT);
+        auto wasTruncated = next != value;
+
+        m_value = std::move(next);
+
+        if (wasTruncated && m_input && gdToStd(m_input->getString()) != m_value) {
+            auto nativeByte = nativeCursorByteOffset();
+            m_input->setString(gd::string(m_value.c_str()), false);
+            setNativeCursorFromByte(nativeByte);
+        } else {
+            m_cursorByte = nativeCursorByteOffset();
+        }
+
+        refreshVisuals();
     }
 
     void syncValueFromInput() {
-        // m_value is the authoritative UTF-8 buffer; the hidden native TextInput is only the IME host.
+        if (!m_input) return;
+        setValueFromInput(gdToStd(m_input->getString()));
     }
 
     void placeCursorFromFieldPoint(CCPoint const& local) {
@@ -1497,6 +1508,7 @@ protected:
         m_input->setCallback([this](std::string const& value) {
             this->setValueFromInput(value);
         });
+        m_mainLayer->addChild(m_input, 0);
         this->setKeyboardEnabled(true);
         m_keyboardListener = geode::KeyboardInputEvent().listen(
             [this](geode::KeyboardInputData& data) { return this->handleKeyboardEvent(data); },
