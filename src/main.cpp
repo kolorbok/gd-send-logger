@@ -2617,7 +2617,7 @@ protected:
                 m_noPingToggle->isToggled() == submittedNoPing) {
                 m_noPingToggle->toggle(false);
             }
-        }, {}, submittedNoPing, submittedRequestID);
+        }, submittedNoPing, submittedRequestID);
     }
 
     void onExit() override {
@@ -3729,6 +3729,8 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         CCMenuItemSpriteExtra* feedbackButton = nullptr;
         CCMenuItemToggler* noPingToggle = nullptr;
         CCLabelBMFont* noPingLabel = nullptr;
+        bool pendingModeratorNoPing = false;
+        bool hasPendingModeratorNoPing = false;
     };
 
     static void onModify(auto& self) {
@@ -3896,7 +3898,7 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
                     m_fields->noPingToggle && m_fields->noPingToggle->isToggled() == submittedNoPing) {
                     m_fields->noPingToggle->toggle(false);
                 }
-            }, {}, submittedNoPing, submittedRequestID);
+            }, submittedNoPing, submittedRequestID);
             return;
         }
 
@@ -3906,6 +3908,14 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         SendSnapshot fakeSnapshot;
         RequestContext captured = m_fields->requestContext;
         if (fakeSend) fakeSnapshot = captureSend(this);
+
+        // For the real RobTop moderator upload, freeze NO PING at the exact moment
+        // the user presses Submit. uploadActionFinished() can run later, after the
+        // checkbox has already been changed for another request.
+        if (m_moderator && !m_fields->helperRequestPopup && !fakeSend) {
+            m_fields->pendingModeratorNoPing = m_fields->noPingToggle && m_fields->noPingToggle->isToggled();
+            m_fields->hasPendingModeratorNoPing = true;
+        }
 
         RateStarsLayer::onRate(sender);
 
@@ -3918,12 +3928,19 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
         bool wasModerator = m_moderator;
         auto snapshot = captureSend(this);
         auto captured = m_fields->requestContext;
+        bool submittedNoPing = m_fields->hasPendingModeratorNoPing
+            ? m_fields->pendingModeratorNoPing
+            : (m_fields->noPingToggle && m_fields->noPingToggle->isToggled());
+        m_fields->hasPendingModeratorNoPing = false;
 
         if (debugLogging()) {
             log::info("RateStarsLayer::uploadActionFinished id={}, response={}, moderator={}", id, response, wasModerator);
         }
 
         if (wasModerator && !m_fields->helperRequestPopup) {
+            // reportSend() builds the Discord payload. Keep the NO PING value from
+            // the original Submit click instead of the current checkbox state.
+            setNoPingFor(captured, submittedNoPing);
             reportSend(snapshot, false, captured.active && captured.mode == "moderator" ? &captured : nullptr);
         }
         RateStarsLayer::uploadActionFinished(id, response);
