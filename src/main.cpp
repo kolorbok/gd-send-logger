@@ -1,7 +1,6 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/RateStarsLayer.hpp>
 #include <Geode/modify/CCTextInputNode.hpp>
-#include <Geode/modify/CCTextFieldTTF.hpp>
 #include <Geode/modify/LevelSearchLayer.hpp>
 #include <Geode/modify/LevelBrowserLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
@@ -1610,29 +1609,12 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
         CCTextInputNode::deleteForward();
     }
 
-    bool onTextFieldInsertText(CCTextFieldTTF* sender, char const* text, int nLen, enumKeyCodes keyCodes) {
+    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender) {
         if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEInsert && text && nLen > 0) {
-                g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(nLen)));
-            }
+            if (g_feedbackIMEBackspace) g_feedbackIMEBackspace();
             return true;
         }
-        return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
-    }
-};
-
-// Android can dispatch Backspace directly through CCTextFieldTTF's IME delegate
-// path instead of reaching CCTextInputNode::deleteBackward(). Keep this hook
-// limited to our hidden Feedback input so the existing text/UTF-8 system is untouched.
-class $modify(GDRequestsFeedbackIMETextField, CCTextFieldTTF) {
-    void deleteBackward() {
-        if (g_feedbackIMEInput && this->getDelegate() == g_feedbackIMEInput) {
-            if (g_feedbackIMEBackspace) {
-                g_feedbackIMEBackspace();
-            }
-            return;
-        }
-        CCTextFieldTTF::deleteBackward();
+        return CCTextInputNode::onTextFieldDeleteBackward(sender);
     }
 };
 
