@@ -2494,7 +2494,6 @@ protected:
             m_submitButton->setSizeMult(1.f);
         }
 
-        if (m_noPingToggle) m_noPingToggle->toggle(noPingFor(m_context));
     }
 
     CCMenuItemSpriteExtra* reasonButton(char const* label, std::string reason, CCPoint pos) {
@@ -2591,6 +2590,9 @@ protected:
     }
 
     void onNoPing(CCObject*) {
+        // CCMenuItemToggler updates its state during activate(). Read it only after
+        // that activation has completed; this makes the stored value exactly match
+        // the visible checkbox and keeps it when the popup is reopened.
         this->scheduleOnce(schedule_selector(RejectPopup::syncNoPingState), 0.f);
     }
 
@@ -3867,7 +3869,9 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
 
     void onRequestNoPing(CCObject*) {
         if (!m_fields->requestContext.active || !m_fields->noPingToggle) return;
-        setNoPingFor(m_fields->requestContext, m_fields->noPingToggle->isToggled());
+        // The toggler changes its state as part of activate(), so store the final
+        // state on the next tick instead of sampling the pre-click state.
+        this->scheduleOnce(schedule_selector(GDRequestsRateStarsLayer::syncRequestNoPingState), 0.f);
     }
 
     void onExit() override {
