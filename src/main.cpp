@@ -2309,8 +2309,12 @@ void SubmitUploadDelegate::onClosePopup(UploadActionPopup* popup) {
     g_submitLoadingHost = nullptr;
     g_submitRequestState.reset();
 
-    // Closing the native X only closes the loading/result popup. Restore the
-    // parent popup's X so the user can continue working and submit again.
+    // The delegate is called by the native popup's X callback. Explicitly close
+    // the native popup here; globals are already cleared, so a possible second
+    // delegate callback is harmless and will return immediately.
+    if (popup) popup->closePopup();
+
+    // Restore the parent popup's X so the user can continue working and submit again.
     if (state && state->restoreHostClose) {
         auto restore = std::move(state->restoreHostClose);
         restore();
@@ -2571,8 +2575,7 @@ protected:
     }
 
     void onNoPing(CCObject*) {
-        if (!m_noPingToggle) return;
-        setNoPingFor(m_context, m_noPingToggle->isToggled());
+        this->scheduleOnce(schedule_selector(RejectPopup::syncNoPingState), 0.f);
     }
 
     void onFeedback(CCObject*) { openFeedbackEditor(m_context); }
