@@ -1618,6 +1618,18 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
         }
         return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
     }
+
+    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender, char const* delText, int nLen) {
+        if (this == g_feedbackIMEInput) {
+            if (g_feedbackIMEBackspace) {
+                g_feedbackIMEBackspace();
+            }
+            // The hidden native field is only an IME host; its own text must not be
+            // modified. The visible FeedbackPopup owns the actual UTF-8 buffer.
+            return true;
+        }
+        return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
+    }
 };
 
 static void openFeedbackEditor(RequestContext const& context) {
