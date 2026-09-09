@@ -2244,6 +2244,7 @@ static void hideSubmitLoading();
 struct SubmitRequestState {
     std::atomic_bool active{true};
     std::function<void()> restoreHostClose;
+    std::function<void()> resetNoPingVisual;
 };
 
 class SubmitUploadDelegate final : public UploadPopupDelegate {
@@ -2259,7 +2260,8 @@ static std::shared_ptr<SubmitRequestState> g_submitRequestState;
 static std::shared_ptr<SubmitRequestState> showSubmitLoading(
     CCNode* host,
     char const* title,
-    std::function<void()> restoreHostClose = {}
+    std::function<void()> restoreHostClose = {},
+    std::function<void()> resetNoPingVisual = {}
 ) {
     if (!host || g_submitLoadingPopup) return nullptr;
 
@@ -2274,6 +2276,7 @@ static std::shared_ptr<SubmitRequestState> showSubmitLoading(
 
     g_submitRequestState = std::make_shared<SubmitRequestState>();
     g_submitRequestState->restoreHostClose = std::move(restoreHostClose);
+    g_submitRequestState->resetNoPingVisual = std::move(resetNoPingVisual);
     g_submitLoadingPopup = popup;
     g_submitLoadingHost = host;
 
@@ -2353,12 +2356,13 @@ static void postRequestAction(
     std::string reason,
     SendSnapshot snapshot,
     CCNode* loadingHost,
-    std::function<void()> restoreHostClose = {}
+    std::function<void()> restoreHostClose = {},
+    std::function<void()> resetNoPingVisual = {}
 ) {
     auto key = connectionKey();
     if (key.empty() || !context.active || context.request.requestID <= 0) return;
 
-    auto state = showSubmitLoading(loadingHost, "Submitting...", std::move(restoreHostClose));
+    auto state = showSubmitLoading(loadingHost, "Submitting...", std::move(restoreHostClose), std::move(resetNoPingVisual));
     if (!state) return;
 
     auto body = matjson::Value();
@@ -2394,6 +2398,7 @@ static void postRequestAction(
             if (res.ok()) {
                 g_feedbackDrafts.erase(requestID);
                 g_noPingDrafts.erase(requestID);
+                if (state->resetNoPingVisual) state->resetNoPingVisual();
 
                 if (g_submitRequestState != state || !g_submitLoadingPopup) return;
                 auto* popup = g_submitLoadingPopup;
@@ -2585,11 +2590,16 @@ protected:
             showAlert(MOD_NAME, "Choose a reject reason before submitting.");
             return;
         }
+        // Read the toggler directly at submit time. This avoids a race where the user
+        // enables NO PING and immediately presses Submit before the deferred sync runs.
+        if (m_noPingToggle) setNoPingFor(m_context, m_noPingToggle->isToggled());
         auto context = m_context;
         auto reason = m_reason;
         // The Reject Reason popup never shows its own frame X. Closing the
         // native UploadActionPopup simply returns here and Submit can be used again.
-        postRequestAction(context, "reject", reason, {}, this);
+        postRequestAction(context, "reject", reason, {}, this, {}, [this]() {
+            if (m_noPingToggle) m_noPingToggle->toggle(false);
+        });
     }
 
     void onExit() override {
@@ -3853,7 +3863,15 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
                 return;
             }
             auto context = m_fields->requestContext;
-            postRequestAction(context, "send", "", snapshot, this);
+            // Read the current checkbox state immediately before building the request.
+            // The click callback can be deferred, so relying only on onRequestNoPing()
+            // causes a fast NO PING -> Submit sequence to send noPing=false.
+            if (m_fields->noPingToggle) {
+                setNoPingFor(context, m_fields->noPingToggle->isToggled());
+            }
+            postRequestAction(context, "send", "", snapshot, this, {}, [this]() {
+                if (m_fields->noPingToggle) m_fields->noPingToggle->toggle(false);
+            });
             return;
         }
 
