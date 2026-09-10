@@ -963,6 +963,9 @@ protected:
     std::vector<CCLabelTTF*> m_lineLabels;
     std::string m_value;
     std::size_t m_cursorByte = 0;
+    // Android IME can occasionally deliver a UTF-8 code point in multiple callbacks.
+    // Keep an incomplete trailing sequence out of the visible editor until it is complete.
+    std::string m_pendingUtf8Insert;
     bool m_focused = false;
     bool m_cursorInitialized = false;
     bool m_nativeCursorSettled = false;
@@ -988,9 +991,55 @@ protected:
     static constexpr float LINE_STEP = 11.2f;
     static constexpr std::size_t MAX_VISIBLE_LINES = 7;
 
+    static unsigned int decodeUtf8CodePoint(std::string const& text, std::size_t index, std::size_t& length) {
+        length = 0;
+        if (index >= text.size()) return 0;
+        auto b0 = static_cast<unsigned char>(text[index]);
+        if (b0 < 0x80) { length = 1; return b0; }
+        std::size_t need = 0;
+        unsigned int cp = 0;
+        if ((b0 & 0xE0) == 0xC0) { need = 2; cp = b0 & 0x1F; }
+        else if ((b0 & 0xF0) == 0xE0) { need = 3; cp = b0 & 0x0F; }
+        else if ((b0 & 0xF8) == 0xF0) { need = 4; cp = b0 & 0x07; }
+        else return 0;
+        if (index + need > text.size()) return 0;
+        for (std::size_t i = 1; i < need; ++i) {
+            auto b = static_cast<unsigned char>(text[index + i]);
+            if ((b & 0xC0) != 0x80) return 0;
+            cp = (cp << 6) | (b & 0x3F);
+        }
+        if ((need == 2 && cp < 0x80) ||
+            (need == 3 && cp < 0x800) ||
+            (need == 4 && cp < 0x10000) ||
+            cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+        length = need;
+        return cp;
+    }
+
+    static std::string cocosSafeDisplayText(std::string const& text) {
+        std::string result;
+        result.reserve(text.size());
+        for (std::size_t i = 0; i < text.size();) {
+            std::size_t length = 0;
+            auto cp = decodeUtf8CodePoint(text, i, length);
+            if (length == 0) break;
+            if (!((cp >= 0x0300 && cp <= 0x036F) ||
+                  (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+                  (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+                  (cp >= 0x20D0 && cp <= 0x20FF) ||
+                  (cp >= 0xFE20 && cp <= 0xFE2F))) {
+                result.append(text, i, length);
+            }
+            i += length;
+        }
+        return result;
+    }
+
     float measuredRawWidth(std::string const& text) {
         if (!m_measureLabel || text.empty()) return 0.f;
-        m_measureLabel->setString(text.c_str());
+        auto safeText = cocosSafeDisplayText(text);
+        if (safeText.empty()) return 0.f;
+        m_measureLabel->setString(safeText.c_str());
         return m_measureLabel->getContentSize().width;
     }
 
@@ -1244,7 +1293,8 @@ protected:
 
         for (std::size_t row = 0; row < visibleCount; ++row) {
             auto const& line = lines[firstVisible + row];
-            auto* label = CCLabelTTF::create(line.text.c_str(), "Arial", 18.f);
+            auto safeDisplayText = cocosSafeDisplayText(line.text);
+            auto* label = CCLabelTTF::create(safeDisplayText.c_str(), "Arial", 18.f);
             if (!label) continue;
             label->setScale(TEXT_SCALE);
             label->setAnchorPoint({0.f, 1.f});
@@ -1424,7 +1474,36 @@ protected:
     }
 
     void handleNativeInsert(std::string const& text) {
-        insertUtf8AtCursor(text);
+        if (text.empty()) return;
+
+        // Do not let an incomplete/invalid UTF-8 fragment reach Cocos2d. Android IMEs
+        // may split a multi-byte code point across callbacks while composing text.
+        m_pendingUtf8Insert += text;
+
+        std::string complete;
+        complete.reserve(m_pendingUtf8Insert.size());
+        std::size_t i = 0;
+        while (i < m_pendingUtf8Insert.size()) {
+            std::size_t length = 0;
+            auto cp = decodeUtf8CodePoint(m_pendingUtf8Insert, i, length);
+            if (length == 0) {
+                // A leading byte without all continuation bytes is kept for the next
+                // callback. An actually invalid byte is discarded so it cannot poison
+                // the editor buffer indefinitely.
+                auto b = static_cast<unsigned char>(m_pendingUtf8Insert[i]);
+                bool incomplete = ((b & 0xE0) == 0xC0 && m_pendingUtf8Insert.size() - i < 2) ||
+                                   ((b & 0xF0) == 0xE0 && m_pendingUtf8Insert.size() - i < 3) ||
+                                   ((b & 0xF8) == 0xF0 && m_pendingUtf8Insert.size() - i < 4);
+                if (incomplete) break;
+                ++i;
+                continue;
+            }
+            complete.append(m_pendingUtf8Insert, i, length);
+            i += length;
+        }
+
+        if (i > 0) m_pendingUtf8Insert.erase(0, i);
+        if (!complete.empty()) insertUtf8AtCursor(complete);
     }
 
     void setValueFromInput(std::string const&) {
@@ -1669,6 +1748,7 @@ protected:
     }
 
     void dismissEditor(CCObject* sender = nullptr) {
+        m_pendingUtf8Insert.clear();
         if (g_feedbackIMEInput == (m_input ? m_input->getInputNode() : nullptr)) {
             g_feedbackIMEInput = nullptr;
             g_feedbackIMEInsert = {};
