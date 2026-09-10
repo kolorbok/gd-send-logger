@@ -979,7 +979,11 @@ protected:
     static constexpr float FIELD_Y = 66.f;
     static constexpr float TEXT_LEFT = FIELD_X + 10.f;
     // Keep the visible text a little higher inside the unchanged field rectangle.
+#if defined(GEODE_IS_ANDROID)
+    static constexpr float TEXT_TOP = FIELD_Y + FIELD_H - 8.f;
+#else
     static constexpr float TEXT_TOP = FIELD_Y + FIELD_H - 9.f;
+#endif
     static constexpr float TEXT_SCALE = .58f;
     static constexpr float LINE_STEP = 11.2f;
     static constexpr std::size_t MAX_VISIBLE_LINES = 7;
@@ -1300,11 +1304,12 @@ protected:
         if (m_input) {
             if (auto* node = m_input->getInputNode()) {
                 if (node->m_textField) {
-                    auto native = gdToStd(m_input->getString());
-                    if (native != m_value) {
-                        m_input->setString(gd::string(m_value.c_str()), false);
-                    }
-                    node->m_textField->m_uCursorPos = static_cast<int>(m_cursorByte);
+                    // CCTextFieldTTF cursor position is a character index, not a UTF-8 byte
+                    // offset. Using m_cursorByte breaks as soon as the text contains multibyte
+                    // characters and becomes especially visible after reopening saved text.
+                    auto cursor = std::min(m_cursorByte, m_value.size());
+                    auto prefix = m_value.substr(0, cursor);
+                    node->m_textField->m_uCursorPos = static_cast<int>(utf8CharCount(prefix));
                     node->updateBlinkLabel();
                 }
             }
