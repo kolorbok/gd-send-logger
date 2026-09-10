@@ -1223,7 +1223,7 @@ protected:
             label->setAnchorPoint({0.f, 1.f});
             label->setPosition({TEXT_LEFT, TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP
 #if defined(GEODE_IS_ANDROID)
-                + 4.0f
+                + 2.0f
 #endif
             });
             label->setColor(ccc3(255, 255, 255));
@@ -1400,43 +1400,12 @@ protected:
         insertUtf8AtCursor(text);
     }
 
-    static std::size_t utf8ByteOffsetForCharIndex(std::string const& text, std::size_t charIndex) {
-        std::size_t i = 0;
-        std::size_t count = 0;
-        while (i < text.size() && count < charIndex) {
-            i = nextUtf8Boundary(text, i);
-            ++count;
-        }
-        return i;
-    }
-
-    void setValueFromInput(std::string const& value) {
-#if defined(GEODE_IS_ANDROID)
-        auto nextValue = value;
-        truncateUtf8ToChars(nextValue, FEEDBACK_LIMIT);
-        m_value = std::move(nextValue);
-
-        if (m_input) {
-            if (auto* node = m_input->getInputNode()) {
-                if (node->m_textField) {
-                    auto charCursor = static_cast<std::size_t>(std::max(0, node->m_textField->m_uCursorPos));
-                    m_cursorByte = utf8ByteOffsetForCharIndex(m_value, std::min(charCursor, utf8CharCount(m_value)));
-                }
-            }
-        }
-        m_cursorByte = clampUtf8Boundary(m_value, m_cursorByte);
-        refreshVisuals();
-#else
-        (void)value;
-#endif
+    void setValueFromInput(std::string const&) {
+        // Kept for compatibility with the TextInput callback; native text is not authoritative.
     }
 
     void syncValueFromInput() {
-#if defined(GEODE_IS_ANDROID)
-        if (m_input) {
-            setValueFromInput(gdToStd(m_input->getString()));
-        }
-#endif
+        // m_value is the authoritative UTF-8 buffer; the hidden native TextInput is only the IME host.
     }
 
     void placeCursorFromFieldPoint(CCPoint const& local) {
@@ -1515,12 +1484,6 @@ protected:
 
         if (!m_focused) return geode::ListenerResult::Propagate;
 
-#if defined(GEODE_IS_ANDROID)
-        // Android's native TextInput owns editing, deletion, cursor movement and IME/T9.
-        // Do not compete with it from the generic keyboard listener.
-        return geode::ListenerResult::Propagate;
-#endif
-
         auto ctrl = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Control);
         auto alt = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Alt);
         auto super = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Super);
@@ -1593,7 +1556,7 @@ protected:
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
         m_input->setString(gd::string(""), false);
-        m_input->setCallback([this](std::string const& value) { this->setValueFromInput(value); });
+        m_input->setCallback([this](std::string const&) {});
         m_mainLayer->addChild(m_input, 0);
         g_feedbackIMEInput = m_input->getInputNode();
         g_feedbackIMEInsert = [this](std::string const& text) { this->handleNativeInsert(text); };
@@ -1726,17 +1689,12 @@ public:
 class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
     void insertText(char const* text, int len, enumKeyCodes keyCodes) {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            CCTextInputNode::insertText(text, len, keyCodes);
-            return;
-#elif !defined(GEODE_IS_WINDOWS)
+#if !defined(GEODE_IS_WINDOWS)
             if (g_feedbackIMEInsert && text && len > 0) {
                 g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(len)));
             }
-            return;
-#else
-            return;
 #endif
+            return;
         }
         CCTextInputNode::insertText(text, len, keyCodes);
     }
@@ -1769,16 +1727,12 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     bool onTextFieldInsertText(CCTextFieldTTF* sender, char const* text, int nLen, enumKeyCodes keyCodes) {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
-#elif !defined(GEODE_IS_WINDOWS)
+#if !defined(GEODE_IS_WINDOWS)
             if (g_feedbackIMEInsert && text && nLen > 0) {
                 g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(nLen)));
             }
-            return true;
-#else
-            return true;
 #endif
+            return true;
         }
         return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
     }
