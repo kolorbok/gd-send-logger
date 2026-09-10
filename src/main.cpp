@@ -3200,7 +3200,7 @@ protected:
     static constexpr float TEXT_W = SCROLL_W - 20.f;
     static constexpr float TTF_SIZE = 11.f;
     static constexpr float TTF_LINE_STEP = 15.f;
-    static constexpr float INFO_LINE_STEP = 27.f;
+    static constexpr float INFO_LINE_STEP = 30.f;
 
     float measureUnicode(std::string const& value) {
         if (!m_measureLabel || value.empty()) return 0.f;
@@ -3427,7 +3427,7 @@ protected:
         float required = 13.f;
         required += static_cast<float>(infoLines.size()) * INFO_LINE_STEP;
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) required += 4.f;
+            if (!infoLines.empty()) required += 6.f;
             required += 16.f;
             required += static_cast<float>(descriptionLines.size()) * TTF_LINE_STEP;
         }
@@ -3467,7 +3467,7 @@ protected:
         }
 
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) y -= 4.f;
+            if (!infoLines.empty()) y -= 7.f;
             auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
             if (heading) {
                 heading->setScale(.38f);
@@ -3678,7 +3678,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
         // Use the vanilla green info icon shown by Geometry Dash. Keep the
         // visual icon smaller while preserving the normal button hit area.
-        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize * .62f);
+        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
