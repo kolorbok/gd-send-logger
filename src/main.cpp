@@ -1244,11 +1244,7 @@ protected:
                 // Keep the custom caret on the exact text advance. A tiny positive inset
                 // avoids antialiasing overlap without creating the old 1.5 px visual gap.
                 auto x = TEXT_LEFT + measuredRawWidth(prefix) * TEXT_SCALE - 0.3f;
-                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 11.0f
-#if defined(GEODE_IS_ANDROID)
-                    + 4.0f
-#endif
-                ;
+                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 11.0f;
                 x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
                 y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
                 m_caret->setPosition({x, y});
@@ -1617,11 +1613,7 @@ protected:
         m_placeholder->setScale(.48f);
         m_placeholder->setOpacity(145);
         m_placeholder->setAnchorPoint({0.f, .5f});
-        m_placeholder->setPosition({TEXT_LEFT, TEXT_TOP - 4.9f
-#if defined(GEODE_IS_ANDROID)
-            + 4.0f
-#endif
-        });
+        m_placeholder->setPosition({TEXT_LEFT, TEXT_TOP - 4.9f});
         m_mainLayer->addChild(m_placeholder, 6);
 
         m_caret = CCLayerColor::create(ccc4(255, 255, 255, 255), .62f, 9.2f);
