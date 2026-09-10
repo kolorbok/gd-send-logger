@@ -1400,43 +1400,12 @@ protected:
         insertUtf8AtCursor(text);
     }
 
-    static std::size_t utf8ByteOffsetForCharIndex(std::string const& text, std::size_t charIndex) {
-        std::size_t i = 0;
-        std::size_t count = 0;
-        while (i < text.size() && count < charIndex) {
-            i = nextUtf8Boundary(text, i);
-            ++count;
-        }
-        return i;
-    }
-
-    void setValueFromInput(std::string const& value) {
-#if defined(GEODE_IS_ANDROID)
-        auto nextValue = value;
-        truncateUtf8ToChars(nextValue, FEEDBACK_LIMIT);
-        m_value = std::move(nextValue);
-
-        if (m_input) {
-            if (auto* node = m_input->getInputNode()) {
-                if (node->m_textField) {
-                    auto charCursor = static_cast<std::size_t>(std::max(0, node->m_textField->m_uCursorPos));
-                    m_cursorByte = utf8ByteOffsetForCharIndex(m_value, std::min(charCursor, utf8CharCount(m_value)));
-                }
-            }
-        }
-        m_cursorByte = clampUtf8Boundary(m_value, m_cursorByte);
-        refreshVisuals();
-#else
-        (void)value;
-#endif
+    void setValueFromInput(std::string const&) {
+        // Kept for compatibility with the TextInput callback; native text is not authoritative.
     }
 
     void syncValueFromInput() {
-#if defined(GEODE_IS_ANDROID)
-        if (m_input) {
-            setValueFromInput(gdToStd(m_input->getString()));
-        }
-#endif
+        // m_value is the authoritative UTF-8 buffer; the hidden native TextInput is only the IME host.
     }
 
     void placeCursorFromFieldPoint(CCPoint const& local) {
@@ -1587,7 +1556,7 @@ protected:
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(FEEDBACK_LIMIT);
         m_input->setString(gd::string(""), false);
-        m_input->setCallback([this](std::string const& value) { this->setValueFromInput(value); });
+        m_input->setCallback([this](std::string const&) {});
         m_mainLayer->addChild(m_input, 0);
         g_feedbackIMEInput = m_input->getInputNode();
         g_feedbackIMEInsert = [this](std::string const& text) { this->handleNativeInsert(text); };
@@ -1732,26 +1701,20 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     void deleteBackward() {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            CCTextInputNode::deleteBackward();
+            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
+                g_feedbackIMEBackspace();
+            }
             return;
-#else
-            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) g_feedbackIMEBackspace();
-            return;
-#endif
         }
         CCTextInputNode::deleteBackward();
     }
 
     void deleteForward() {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            CCTextInputNode::deleteForward();
+            if (g_feedbackIMEDelete) {
+                g_feedbackIMEDelete();
+            }
             return;
-#else
-            if (g_feedbackIMEDelete) g_feedbackIMEDelete();
-            return;
-#endif
         }
         CCTextInputNode::deleteForward();
     }
@@ -1770,14 +1733,10 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     bool onTextFieldDeleteBackward(CCTextFieldTTF* sender, const char* delText, int nLen) {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
-#else
             if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
                 g_feedbackIMEBackspace();
             }
             return true;
-#endif
         }
         return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
     }
