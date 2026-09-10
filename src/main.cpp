@@ -1311,9 +1311,15 @@ protected:
                     // CCTextFieldTTF cursor position is a character index, not a UTF-8 byte
                     // offset. Using m_cursorByte breaks as soon as the text contains multibyte
                     // characters and becomes especially visible after reopening saved text.
-                    auto cursor = std::min(m_cursorByte, m_value.size());
-                    auto prefix = m_value.substr(0, cursor);
-                    node->m_textField->m_uCursorPos = static_cast<int>(utf8CharCount(prefix));
+                    // The hidden native field is only the IME host and can contain a
+                    // different buffer from our visible UTF-8 editor. Never place its
+                    // native cursor past the native string itself: IME composition
+                    // characters (for example a combining acute in "ю́") can otherwise
+                    // make Cocos access an invalid cursor position and crash.
+                    auto nativeText = gdToStd(m_input->getString());
+                    auto nativeChars = utf8CharCount(nativeText);
+                    auto cursor = std::min(nativeChars, utf8CharCount(m_value.substr(0, m_cursorByte)));
+                    node->m_textField->m_uCursorPos = static_cast<int>(cursor);
                     node->updateBlinkLabel();
                 }
             }
