@@ -1700,20 +1700,16 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
     }
 
     void deleteBackward() {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
-                g_feedbackIMEBackspace();
-            }
+        if (this == g_feedbackIMEInput && g_feedbackIMEBackspace) {
+            if (!feedbackDeleteEventAlreadyHandled()) g_feedbackIMEBackspace();
             return;
         }
         CCTextInputNode::deleteBackward();
     }
 
     void deleteForward() {
-        if (this == g_feedbackIMEInput) {
-            if (g_feedbackIMEDelete) {
-                g_feedbackIMEDelete();
-            }
+        if (this == g_feedbackIMEInput && g_feedbackIMEDelete) {
+            g_feedbackIMEDelete();
             return;
         }
         CCTextInputNode::deleteForward();
@@ -1745,7 +1741,17 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 // Android can dispatch Backspace directly through CCTextFieldTTF's IME delegate
 // path instead of reaching CCTextInputNode::deleteBackward(). Keep this hook
 // limited to our hidden Feedback input so the existing text/UTF-8 system is untouched.
-
+class $modify(GDRequestsFeedbackIMETextField, CCTextFieldTTF) {
+    void deleteBackward() {
+        if (g_feedbackIMEInput && g_feedbackIMEInput->m_textField == this) {
+            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
+                g_feedbackIMEBackspace();
+            }
+            return;
+        }
+        CCTextFieldTTF::deleteBackward();
+    }
+};
 
 static void openFeedbackEditor(RequestContext const& context) {
     if (!context.active || context.request.requestID <= 0) return;
