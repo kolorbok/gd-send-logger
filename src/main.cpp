@@ -233,7 +233,7 @@ static bool g_requestBrowserActive = false;
 static LevelBrowserLayer* g_requestBrowser = nullptr;
 static bool g_creatingHelperPopup = false;
 static std::size_t g_requestNativeBatch = 0;
-constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 500;
+constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 50;
 
 static std::string gdToStd(gd::string const& value) {
     return std::string(value.c_str());
