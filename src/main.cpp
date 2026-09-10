@@ -955,7 +955,8 @@ protected:
     geode::TextInput* m_input = nullptr;
     CCLabelTTF* m_measureLabel = nullptr;
     CCLabelBMFont* m_counter = nullptr;
-    CCLabelBMFont* m_feedbackInfo = nullptr;
+    CCLabelBMFont* m_feedbackLanguage = nullptr;
+    CCLabelBMFont* m_feedbackRequirement = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
     FeedbackTouchLayer* m_touchLayer = nullptr;
     CCLayerColor* m_caret = nullptr;
@@ -1235,7 +1236,7 @@ protected:
                 // Keep the custom caret on the exact text advance. A tiny positive inset
                 // avoids antialiasing overlap without creating the old 1.5 px visual gap.
                 auto x = TEXT_LEFT + measuredRawWidth(prefix) * TEXT_SCALE - 0.3f;
-                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 13.0f;
+                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 11.0f;
 #if defined(GEODE_IS_ANDROID)
                 // Android font/caret metrics place the custom caret slightly too high.
                 y -= 2.0f;
@@ -1252,15 +1253,28 @@ protected:
             auto counterText = std::to_string(utf8CharCount(m_value)) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
         }
-        if (m_feedbackInfo) {
-            auto wantsFeedback = requestWantsFeedback(m_context.request);
+        if (m_feedbackLanguage) {
             auto language = requestLanguageLabel(m_context.request.reviewLanguage);
-            std::string info = "FEEDBACK: ";
-            info += wantsFeedback ? "REQUIRED" : "NOT REQUIRED";
             if (!language.empty() && language != "Not specified") {
-                info += "  |  LANGUAGE: " + language;
+                m_feedbackLanguage->setString(("LANGUAGE: " + language).c_str());
+                m_feedbackLanguage->setVisible(true);
+            } else {
+                m_feedbackLanguage->setString("");
+                m_feedbackLanguage->setVisible(false);
             }
-            m_feedbackInfo->setString(info.c_str());
+        }
+        if (m_feedbackRequirement) {
+            // Do not show a feedback requirement when the request has no feedback
+            // metadata at all.
+            if (requestFeedbackEnabled(m_context.request)) {
+                auto text = std::string("FEEDBACK: ") +
+                    (requestWantsFeedback(m_context.request) ? "REQUIRED" : "NOT REQUIRED");
+                m_feedbackRequirement->setString(text.c_str());
+                m_feedbackRequirement->setVisible(true);
+            } else {
+                m_feedbackRequirement->setString("");
+                m_feedbackRequirement->setVisible(false);
+            }
         }
         renderText();
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
@@ -1549,12 +1563,20 @@ protected:
         m_counter->setPosition({300.f, 58.f});
         m_mainLayer->addChild(m_counter);
 
-        m_feedbackInfo = CCLabelBMFont::create("", "goldFont.fnt");
-        if (m_feedbackInfo) {
-            m_feedbackInfo->setScale(.22f);
-            m_feedbackInfo->setAnchorPoint({0.f, .5f});
-            m_feedbackInfo->setPosition({40.f, 58.f});
-            m_mainLayer->addChild(m_feedbackInfo, 2);
+        m_feedbackLanguage = CCLabelBMFont::create("", "goldFont.fnt");
+        if (m_feedbackLanguage) {
+            m_feedbackLanguage->setScale(.22f);
+            m_feedbackLanguage->setAnchorPoint({0.f, .5f});
+            m_feedbackLanguage->setPosition({40.f, 58.f});
+            m_mainLayer->addChild(m_feedbackLanguage, 2);
+        }
+
+        m_feedbackRequirement = CCLabelBMFont::create("", "goldFont.fnt");
+        if (m_feedbackRequirement) {
+            m_feedbackRequirement->setScale(.22f);
+            m_feedbackRequirement->setAnchorPoint({.5f, .5f});
+            m_feedbackRequirement->setPosition({170.f, 58.f});
+            m_mainLayer->addChild(m_feedbackRequirement, 2);
         }
 
         auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .58f);
