@@ -1237,10 +1237,6 @@ protected:
                 // avoids antialiasing overlap without creating the old 1.5 px visual gap.
                 auto x = TEXT_LEFT + measuredRawWidth(prefix) * TEXT_SCALE - 0.3f;
                 auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 11.0f;
-#if defined(GEODE_IS_ANDROID)
-                // Android font/caret metrics place the custom caret slightly too high.
-                y -= 2.0f;
-#endif
                 x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
                 y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
                 m_caret->setPosition({x, y});
@@ -1296,9 +1292,24 @@ protected:
     }
 
     void setNativeCursorFromByte(std::size_t byteOffset) {
-        // The native field is intentionally kept empty. Its only job is to own the OS IME
-        // connection; all text and cursor state live in our UTF-8 buffer.
         m_cursorByte = clampUtf8Boundary(m_value, byteOffset);
+#if defined(GEODE_IS_ANDROID)
+        // Android's IME needs a real native buffer/cursor to perform Backspace reliably.
+        // Keep that buffer synchronized only on Android; Windows keeps the existing
+        // keyboard/UTF-8 path untouched.
+        if (m_input) {
+            if (auto* node = m_input->getInputNode()) {
+                if (node->m_textField) {
+                    auto native = gdToStd(m_input->getString());
+                    if (native != m_value) {
+                        m_input->setString(gd::string(m_value.c_str()), false);
+                    }
+                    node->m_textField->m_uCursorPos = static_cast<int>(m_cursorByte);
+                    node->updateBlinkLabel();
+                }
+            }
+        }
+#endif
     }
 
     void syncNativeCursor(float) {}
@@ -1318,6 +1329,9 @@ protected:
         m_value.insert(m_cursorByte, insertion);
         m_cursorByte += insertion.size();
         refreshVisuals();
+#if defined(GEODE_IS_ANDROID)
+        setNativeCursorFromByte(m_cursorByte);
+#endif
     }
 
     void eraseBackward() {
@@ -1329,6 +1343,9 @@ protected:
         m_value.erase(previous, m_cursorByte - previous);
         m_cursorByte = previous;
         refreshVisuals();
+#if defined(GEODE_IS_ANDROID)
+        setNativeCursorFromByte(m_cursorByte);
+#endif
     }
 
     void eraseForward() {
@@ -1338,6 +1355,9 @@ protected:
         auto next = nextUtf8Boundary(m_value, m_cursorByte);
         m_value.erase(m_cursorByte, next - m_cursorByte);
         refreshVisuals();
+#if defined(GEODE_IS_ANDROID)
+        setNativeCursorFromByte(m_cursorByte);
+#endif
     }
 
     void moveCursorHorizontal(int direction) {
@@ -3686,7 +3706,11 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
         // Use the vanilla green info icon shown by Geometry Dash. Keep the
         // visual icon smaller while preserving the normal button hit area.
-        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize);
+        // Texture quality can change the source frame's logical dimensions. Cap the
+        // displayed info icon to the normal GD button height so low-quality textures
+        // cannot make the icon grow disproportionately.
+        float infoTargetHeight = std::clamp(buttonSize, 24.f, 38.f);
+        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", infoTargetHeight);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
