@@ -232,8 +232,9 @@ static bool g_nextBrowserIsRequests = false;
 static bool g_requestBrowserActive = false;
 static LevelBrowserLayer* g_requestBrowser = nullptr;
 static bool g_creatingHelperPopup = false;
-static std::size_t g_requestNativePage = 0;
-constexpr std::size_t REQUEST_NATIVE_PAGE_SIZE = 10;
+static std::size_t g_requestNativeBatch = 0;
+static std::size_t g_requestNativeSubPage = 0;
+constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 50;
 
 static std::string gdToStd(gd::string const& value) {
     return std::string(value.c_str());
@@ -758,7 +759,8 @@ static bool parseRequestsResponse(std::string const& text) {
     std::string line;
     g_requestByLevel.clear();
     g_requestList.clear();
-    g_requestNativePage = 0;
+    g_requestNativeBatch = 0;
+    g_requestNativeSubPage = 0;
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
@@ -825,26 +827,26 @@ static std::vector<int> requestLevelIDs() {
     return ids;
 }
 
-static std::size_t requestNativePageCount() {
+static std::size_t requestNativeBatchCount() {
     auto count = requestLevelIDs().size();
-    return count == 0 ? 0 : (count + REQUEST_NATIVE_PAGE_SIZE - 1) / REQUEST_NATIVE_PAGE_SIZE;
+    return count == 0 ? 0 : (count + REQUEST_NATIVE_BATCH_SIZE - 1) / REQUEST_NATIVE_BATCH_SIZE;
 }
 
-static bool hasNextRequestNativePage() {
-    auto count = requestNativePageCount();
-    return count > 0 && g_requestNativePage + 1 < count;
+static bool hasNextRequestNativeBatch() {
+    auto count = requestNativeBatchCount();
+    return count > 0 && g_requestNativeBatch + 1 < count;
 }
 
-static bool hasPrevRequestNativePage() {
-    return g_requestNativePage > 0;
+static bool hasPrevRequestNativeBatch() {
+    return g_requestNativeBatch > 0;
 }
 
-static std::string requestNativePageCSV(std::size_t page) {
+static std::string requestNativeBatchCSV(std::size_t batch) {
     auto ids = requestLevelIDs();
     if (ids.empty()) return "";
-    auto begin = page * REQUEST_NATIVE_PAGE_SIZE;
+    auto begin = batch * REQUEST_NATIVE_BATCH_SIZE;
     if (begin >= ids.size()) return "";
-    auto end = std::min(ids.size(), begin + REQUEST_NATIVE_PAGE_SIZE);
+    auto end = std::min(ids.size(), begin + REQUEST_NATIVE_BATCH_SIZE);
 
     std::string out;
     for (std::size_t i = begin; i < end; ++i) {
@@ -854,8 +856,8 @@ static std::string requestNativePageCSV(std::size_t page) {
     return out;
 }
 
-static GJSearchObject* makeRequestNativePageSearch(std::size_t page) {
-    auto ids = requestNativePageCSV(page);
+static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
+    auto ids = requestNativeBatchCSV(batch);
     if (ids.empty()) return nullptr;
     return GJSearchObject::create(static_cast<SearchType>(19), gd::string(ids.c_str()));
 }
@@ -3065,10 +3067,13 @@ protected:
             return;
         }
 
-        // Geometry Dash's comma-separated native search effectively tops out around one oversized query. Keep native LevelCell rendering, but page the full request set like GDDL: only the current
-        // small page of request IDs is passed to GJSearchObject at a time.
-        g_requestNativePage = 0;
-        auto* search = makeRequestNativePageSearch(g_requestNativePage);
+        // Keep Geometry Dash's native LevelCell rendering, but use a GDDL-style
+        // outer pagination layer: the full request list stays in our mod, while GD only
+        // receives a 50-ID chunk at a time. Native GD pages (10 levels each) remain
+        // available inside that chunk, and the custom page controls jump between chunks.
+        g_requestNativeBatch = 0;
+        g_requestNativeSubPage = 0;
+        auto* search = makeRequestNativeBatchSearch(g_requestNativeBatch);
         if (!search) {
             showRequestError("Could not create the Geometry Dash request level list.");
             return;
@@ -3211,28 +3216,80 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
 class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     struct Fields {
         bool requestBrowser = false;
+        bool nativeAtEnd = false;
+        bool nativeAtStart = true;
     };
 
     bool isThisRequestBrowser() {
         return m_fields->requestBrowser && g_requestBrowserActive && g_requestBrowser == this;
     }
 
-    void refreshRequestPageArrows() {
+    void refreshRequestBatchArrows() {
         if (!isThisRequestBrowser()) return;
-        auto pageCount = requestNativePageCount();
-        if (m_leftArrow) m_leftArrow->setVisible(g_requestNativePage > 0);
-        if (m_rightArrow) m_rightArrow->setVisible(pageCount > 0 && g_requestNativePage + 1 < pageCount);
+
+        // Server Requests owns the arrows completely: one arrow step is one
+        // 50-level request page. The native 10-level pagination is intentionally bypassed.
+        m_fields->nativeAtEnd = true;
+        m_fields->nativeAtStart = true;
+
+        if (m_rightArrow) m_rightArrow->setVisible(hasNextRequestNativeBatch());
+        if (m_leftArrow) m_leftArrow->setVisible(hasPrevRequestNativeBatch());
     }
 
-    void loadRequestNativePage(std::size_t page) {
-        auto count = requestNativePageCount();
-        if (count == 0 || page >= count) return;
-        auto* search = makeRequestNativePageSearch(page);
+    void loadRequestNativeBatch(std::size_t batch) {
+        auto count = requestNativeBatchCount();
+        if (count == 0 || batch >= count) return;
+        auto* search = makeRequestNativeBatchSearch(batch);
         if (!search) return;
 
-        g_requestNativePage = page;
+        g_requestNativeBatch = batch;
+        g_requestNativeSubPage = 0;
+        m_fields->nativeAtEnd = false;
+        m_fields->nativeAtStart = true;
         setSearchObject(search);
         loadPage(search);
+    }
+
+    void forceRequestPageSize() {
+        if (!isThisRequestBrowser() || !m_list) return;
+
+        auto count = m_levels ? static_cast<std::size_t>(m_levels->count()) : 0;
+        auto visibleCount = std::min<std::size_t>(REQUEST_NATIVE_BATCH_SIZE, count);
+
+        // Geometry Dash normally treats one LevelBrowser page as 10 items.
+        // For Server Requests we deliberately widen that page to the whole
+        // 50-ID request batch, so the list itself contains 50 levels and can
+        // scroll through all of them without creating five native sub-pages.
+        m_itemCount = static_cast<int>(visibleCount);
+        m_pageStartIdx = 0;
+        m_pageEndIdx = visibleCount == 0 ? -1 : static_cast<int>(visibleCount - 1);
+
+        if (m_list->m_listView) {
+            m_list->m_listView->reloadData();
+        }
+    }
+
+    void refreshRequestPageLabels() {
+        if (!isThisRequestBrowser()) return;
+
+        auto ids = requestLevelIDs();
+        auto total = ids.size();
+        if (total == 0) return;
+
+        auto first = g_requestNativeBatch * REQUEST_NATIVE_BATCH_SIZE + 1;
+        auto last = std::min(first + REQUEST_NATIVE_BATCH_SIZE - 1, total);
+
+        if (m_countText) {
+            auto text = std::to_string(first) + " to " + std::to_string(last) +
+                " of " + std::to_string(total);
+            m_countText->setString(text.c_str());
+        }
+
+        // Server Requests uses only the left/right arrows for pagination.
+        // Hide GD's numeric page selector so there is no extra page counter
+        // beside the Server Requests title.
+        if (m_pageBtn) m_pageBtn->setVisible(false);
+        if (m_pageText) m_pageText->setVisible(false);
     }
 
     bool init(GJSearchObject* searchObj) {
@@ -3245,16 +3302,20 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             g_requestBrowserActive = true;
             g_requestBrowser = this;
             m_fields->requestBrowser = true;
-            g_requestNativePage = 0;
+            g_requestNativeBatch = 0;
+            g_requestNativeSubPage = 0;
 
             // LevelBrowserLayer::init() can create/load the first LevelCell objects
-            // before the request-browser flag above is set. Reload the first page once
-            // after activation so request-specific cell decorations are applied.
+            // before the request-browser flag above is set. In that case our LevelCell
+            // hook has no request context yet, so the + / video decorations are skipped
+            // on the very first visit. Reload the same first page once after activation
+            // so every already-created cell gets loadFromLevel() again with the request
+            // context available. This is intentionally queued to the next main-thread
+            // tick instead of calling loadPage() while the base init is still running.
             this->retain();
             geode::queueInMainThread([self = this, searchObj]() {
                 if (self->getParent() && self->isThisRequestBrowser()) {
                     self->loadPage(searchObj);
-                    self->refreshRequestPageArrows();
                 }
                 self->release();
             });
@@ -3264,14 +3325,17 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
 
     void loadLevelsFinished(CCArray* levels, char const* key, int type) override {
         LevelBrowserLayer::loadLevelsFinished(levels, key, type);
-        if (isThisRequestBrowser()) refreshRequestPageArrows();
+        if (isThisRequestBrowser()) {
+            forceRequestPageSize();
+            refreshRequestBatchArrows();
+            refreshRequestPageLabels();
+        }
     }
 
     void onNextPage(CCObject* sender) {
         if (isThisRequestBrowser()) {
-            auto count = requestNativePageCount();
-            if (g_requestNativePage + 1 < count) {
-                loadRequestNativePage(g_requestNativePage + 1);
+            if (hasNextRequestNativeBatch()) {
+                loadRequestNativeBatch(g_requestNativeBatch + 1);
             }
             return;
         }
@@ -3280,12 +3344,24 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
 
     void onPrevPage(CCObject* sender) {
         if (isThisRequestBrowser()) {
-            if (g_requestNativePage > 0) {
-                loadRequestNativePage(g_requestNativePage - 1);
+            if (hasPrevRequestNativeBatch()) {
+                loadRequestNativeBatch(g_requestNativeBatch - 1);
             }
             return;
         }
         LevelBrowserLayer::onPrevPage(sender);
+    }
+
+    void setIDPopupClosed(SetIDPopup* popup, int value) {
+        if (isThisRequestBrowser()) {
+            auto count = requestNativeBatchCount();
+            if (count == 0 || value <= 0) return;
+            auto batch = static_cast<std::size_t>(value - 1);
+            if (batch >= count) batch = count - 1;
+            loadRequestNativeBatch(batch);
+            return;
+        }
+        LevelBrowserLayer::setIDPopupClosed(popup, value);
     }
 
     gd::string getSearchTitle() {
@@ -3295,13 +3371,6 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
                 return gd::string(title.c_str());
             }
             auto title = std::string("Server Requests");
-            auto pages = requestNativePageCount();
-            if (pages > 1) {
-                title += " " + std::to_string(g_requestNativePage + 1) + "/" + std::to_string(pages);
-            }
-            if (g_client.total > g_client.returned && g_client.returned > 0) {
-                title += " (limited)";
-            }
             return gd::string(title.c_str());
         }
         return LevelBrowserLayer::getSearchTitle();
@@ -3312,7 +3381,8 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         if (wasRequestBrowser) {
             g_requestBrowserActive = false;
             g_requestBrowser = nullptr;
-            g_requestNativePage = 0;
+            g_requestNativeBatch = 0;
+            g_requestNativeSubPage = 0;
             g_hasSelectedRequest = false;
             g_selectedRequest = RequestMeta{};
             g_context = RequestContext{};
