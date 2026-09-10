@@ -1515,12 +1515,6 @@ protected:
 
         if (!m_focused) return geode::ListenerResult::Propagate;
 
-#if defined(GEODE_IS_ANDROID)
-        // Android's native TextInput owns editing, deletion, cursor movement and IME/T9.
-        // Do not compete with it from the generic keyboard listener.
-        return geode::ListenerResult::Propagate;
-#endif
-
         auto ctrl = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Control);
         auto alt = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Alt);
         auto super = static_cast<bool>(data.modifiers & geode::KeyboardModifier::Super);
@@ -1726,17 +1720,12 @@ public:
 class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
     void insertText(char const* text, int len, enumKeyCodes keyCodes) {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            CCTextInputNode::insertText(text, len, keyCodes);
-            return;
-#elif !defined(GEODE_IS_WINDOWS)
+#if !defined(GEODE_IS_WINDOWS)
             if (g_feedbackIMEInsert && text && len > 0) {
                 g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(len)));
             }
-            return;
-#else
-            return;
 #endif
+            return;
         }
         CCTextInputNode::insertText(text, len, keyCodes);
     }
@@ -1769,16 +1758,12 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     bool onTextFieldInsertText(CCTextFieldTTF* sender, char const* text, int nLen, enumKeyCodes keyCodes) {
         if (this == g_feedbackIMEInput) {
-#if defined(GEODE_IS_ANDROID)
-            return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
-#elif !defined(GEODE_IS_WINDOWS)
+#if !defined(GEODE_IS_WINDOWS)
             if (g_feedbackIMEInsert && text && nLen > 0) {
                 g_feedbackIMEInsert(std::string(text, static_cast<std::size_t>(nLen)));
             }
-            return true;
-#else
-            return true;
 #endif
+            return true;
         }
         return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
     }
