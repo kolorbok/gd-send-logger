@@ -233,8 +233,7 @@ static bool g_requestBrowserActive = false;
 static LevelBrowserLayer* g_requestBrowser = nullptr;
 static bool g_creatingHelperPopup = false;
 static std::size_t g_requestNativeBatch = 0;
-static std::size_t g_requestNativeSubPage = 0;
-constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 50;
+constexpr std::size_t REQUEST_NATIVE_BATCH_SIZE = 10;
 
 static std::string gdToStd(gd::string const& value) {
     return std::string(value.c_str());
@@ -760,7 +759,6 @@ static bool parseRequestsResponse(std::string const& text) {
     g_requestByLevel.clear();
     g_requestList.clear();
     g_requestNativeBatch = 0;
-    g_requestNativeSubPage = 0;
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
@@ -3067,12 +3065,9 @@ protected:
             return;
         }
 
-        // Keep Geometry Dash's native LevelCell rendering, but use a GDDL-style
-        // outer pagination layer: the full request list stays in our mod, while GD only
-        // receives a 50-ID chunk at a time. Native GD pages (10 levels each) remain
-        // available inside that chunk, and the custom page controls jump between chunks.
+        // Keep Geometry Dash's native LevelCell rendering and paginate the full
+        // request list through 10-ID GJSearchObject batches, like GDDL does.
         g_requestNativeBatch = 0;
-        g_requestNativeSubPage = 0;
         auto* search = makeRequestNativeBatchSearch(g_requestNativeBatch);
         if (!search) {
             showRequestError("Could not create the Geometry Dash request level list.");
@@ -3243,27 +3238,10 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         if (!search) return;
 
         g_requestNativeBatch = batch;
-        g_requestNativeSubPage = 0;
         m_fields->nativeAtEnd = false;
         m_fields->nativeAtStart = true;
         setSearchObject(search);
         loadPage(search);
-    }
-
-    void forceRequestPageSize() {
-        if (!isThisRequestBrowser() || !m_list) return;
-
-        auto count = m_levels ? static_cast<std::size_t>(m_levels->count()) : 0;
-        auto visibleCount = std::min<std::size_t>(REQUEST_NATIVE_BATCH_SIZE, count);
-
-        // Geometry Dash normally treats one LevelBrowser page as 10 items.
-        // For Server Requests we deliberately widen that page to the whole
-        // 50-ID request batch, so the list itself contains 50 levels and can
-        // scroll through all of them without creating five native sub-pages.
-        m_itemCount = static_cast<int>(visibleCount);
-        m_pageStartIdx = 0;
-        m_pageEndIdx = visibleCount == 0 ? -1 : static_cast<int>(visibleCount - 1);
-
     }
 
     void refreshRequestPageLabels() {
@@ -3282,11 +3260,11 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             m_countText->setString(text.c_str());
         }
 
-        // Server Requests uses only the left/right arrows for pagination.
-        // Hide GD's numeric page selector so there is no extra page counter
-        // beside the Server Requests title.
-        if (m_pageBtn) m_pageBtn->setVisible(false);
-        if (m_pageText) m_pageText->setVisible(false);
+        // Keep Geometry Dash's numeric page selector visible. Its click opens
+        // SetIDPopup, which is handled by our setIDPopupClosed() below and
+        // jumps directly to the requested Server Requests page.
+        if (m_pageBtn) m_pageBtn->setVisible(true);
+        if (m_pageText) m_pageText->setString(std::to_string(g_requestNativeBatch + 1).c_str());
     }
 
     bool init(GJSearchObject* searchObj) {
@@ -3300,8 +3278,7 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             g_requestBrowser = this;
             m_fields->requestBrowser = true;
             g_requestNativeBatch = 0;
-            g_requestNativeSubPage = 0;
-
+    
             // LevelBrowserLayer::init() can create/load the first LevelCell objects
             // before the request-browser flag above is set. In that case our LevelCell
             // hook has no request context yet, so the + / video decorations are skipped
@@ -3323,9 +3300,16 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     void loadLevelsFinished(CCArray* levels, char const* key, int type) override {
         LevelBrowserLayer::loadLevelsFinished(levels, key, type);
         if (isThisRequestBrowser()) {
-            forceRequestPageSize();
             refreshRequestBatchArrows();
             refreshRequestPageLabels();
+            this->retain();
+            geode::queueInMainThread([self = this]() {
+                if (self->getParent() && self->isThisRequestBrowser()) {
+                    self->refreshRequestBatchArrows();
+                    self->refreshRequestPageLabels();
+                }
+                self->release();
+            });
         }
     }
 
@@ -3379,8 +3363,7 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             g_requestBrowserActive = false;
             g_requestBrowser = nullptr;
             g_requestNativeBatch = 0;
-            g_requestNativeSubPage = 0;
-            g_hasSelectedRequest = false;
+                g_hasSelectedRequest = false;
             g_selectedRequest = RequestMeta{};
             g_context = RequestContext{};
         }
