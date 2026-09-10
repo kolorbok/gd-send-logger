@@ -3386,6 +3386,27 @@ protected:
         parent->addChild(valueLabel, 2);
     }
 
+    // A language-only request used to occupy a compact single line. Keep that
+    // layout so a request with no review/feedback metadata does not create a
+    // large artificial gap before DESCRIPTION.
+    static void addCompactLanguageLine(CCNode* parent, std::string const& value, float y) {
+        if (!parent) return;
+
+        auto* nameLabel = CCLabelBMFont::create("LANGUAGE", "goldFont.fnt");
+        if (!nameLabel) return;
+        nameLabel->setScale(.38f);
+        nameLabel->setAnchorPoint({0.f, .5f});
+        nameLabel->setPosition({10.f, y - 7.f});
+        parent->addChild(nameLabel, 2);
+
+        auto* valueLabel = CCLabelTTF::create(value.c_str(), "Arial", TTF_SIZE);
+        if (!valueLabel) return;
+        valueLabel->setAnchorPoint({0.f, .5f});
+        valueLabel->setColor(ccc3(255, 255, 255));
+        valueLabel->setPosition({10.f + nameLabel->getContentSize().width * nameLabel->getScaleX() + 4.f, y - 7.f});
+        parent->addChild(valueLabel, 2);
+    }
+
     bool initFor(RequestMeta const& meta) {
         m_meta = meta;
         if (!Popup::init(POPUP_W, POPUP_H)) return false;
@@ -3421,10 +3442,13 @@ protected:
         auto description = hasRequestDescription(meta.description) ? trim(meta.description) : std::string();
         auto descriptionLines = description.empty() ? std::vector<DescriptionDisplayLine>{} : wrapDescription(description);
 
+        bool compactLanguageOnly =
+            infoLines.size() == 1 && infoLines.front().first == "LANGUAGE";
+
         float required = 13.f;
-        required += static_cast<float>(infoLines.size()) * INFO_LINE_STEP;
+        required += compactLanguageOnly ? 20.f : static_cast<float>(infoLines.size()) * INFO_LINE_STEP;
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) required += 6.f;
+            if (!infoLines.empty()) required += compactLanguageOnly ? 2.f : 6.f;
             required += 16.f;
             required += static_cast<float>(descriptionLines.size()) * TTF_LINE_STEP;
         }
@@ -3458,13 +3482,18 @@ protected:
         }
 
         float y = contentH - 10.f;
-        for (auto const& line : infoLines) {
-            addInfoLine(scroll->m_contentLayer, line.first, line.second, y);
-            y -= INFO_LINE_STEP;
+        if (compactLanguageOnly) {
+            addCompactLanguageLine(scroll->m_contentLayer, infoLines.front().second, y);
+            y -= 20.f;
+        } else {
+            for (auto const& line : infoLines) {
+                addInfoLine(scroll->m_contentLayer, line.first, line.second, y);
+                y -= INFO_LINE_STEP;
+            }
         }
 
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) y -= 7.f;
+            if (!infoLines.empty()) y -= compactLanguageOnly ? 2.f : 7.f;
             auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
             if (heading) {
                 heading->setScale(.38f);
@@ -3675,7 +3704,9 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
         // Revert to the v2.0.33 plus texture; the v2.0.34 square GameSheet03 plus
         // was not the desired icon in-game.
-        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize);
+        // Use the vanilla green info icon, but keep the icon itself slightly
+        // smaller than VIEW while preserving the normal button hit area.
+        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize * .78f);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
