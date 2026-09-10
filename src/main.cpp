@@ -931,6 +931,17 @@ static CCTextInputNode* g_feedbackIMEInput = nullptr;
 static std::function<void(std::string const&)> g_feedbackIMEInsert;
 static std::function<void()> g_feedbackIMEBackspace;
 static std::function<void()> g_feedbackIMEDelete;
+static std::chrono::steady_clock::time_point g_feedbackLastDeleteEvent{};
+
+static bool feedbackDeleteEventAlreadyHandled() {
+    auto now = std::chrono::steady_clock::now();
+    if (g_feedbackLastDeleteEvent.time_since_epoch().count() != 0 &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - g_feedbackLastDeleteEvent).count() < 20) {
+        return true;
+    }
+    g_feedbackLastDeleteEvent = now;
+    return false;
+}
 
 class FeedbackPopup final : public geode::Popup {
 protected:
@@ -944,6 +955,7 @@ protected:
     geode::TextInput* m_input = nullptr;
     CCLabelTTF* m_measureLabel = nullptr;
     CCLabelBMFont* m_counter = nullptr;
+    CCLabelBMFont* m_feedbackInfo = nullptr;
     CCLabelBMFont* m_placeholder = nullptr;
     FeedbackTouchLayer* m_touchLayer = nullptr;
     CCLayerColor* m_caret = nullptr;
@@ -1223,7 +1235,11 @@ protected:
                 // Keep the custom caret on the exact text advance. A tiny positive inset
                 // avoids antialiasing overlap without creating the old 1.5 px visual gap.
                 auto x = TEXT_LEFT + measuredRawWidth(prefix) * TEXT_SCALE - 0.3f;
-                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 11.0f;
+                auto y = TEXT_TOP + 1.5f - static_cast<float>(row) * LINE_STEP - 13.0f;
+#if defined(GEODE_IS_ANDROID)
+                // Android font/caret metrics place the custom caret slightly too high.
+                y -= 2.0f;
+#endif
                 x = std::clamp(x, TEXT_LEFT, FIELD_X + FIELD_W - 7.f);
                 y = std::clamp(y, FIELD_Y + 5.f, TEXT_TOP - 2.f);
                 m_caret->setPosition({x, y});
@@ -1235,6 +1251,16 @@ protected:
         if (m_counter) {
             auto counterText = std::to_string(utf8CharCount(m_value)) + "/" + std::to_string(FEEDBACK_LIMIT);
             m_counter->setString(counterText.c_str());
+        }
+        if (m_feedbackInfo) {
+            auto wantsFeedback = requestWantsFeedback(m_context.request);
+            auto language = requestLanguageLabel(m_context.request.reviewLanguage);
+            std::string info = "FEEDBACK: ";
+            info += wantsFeedback ? "REQUIRED" : "NOT REQUIRED";
+            if (!language.empty() && language != "Not specified") {
+                info += "  |  LANGUAGE: " + language;
+            }
+            m_feedbackInfo->setString(info.c_str());
         }
         renderText();
         if (m_placeholder) m_placeholder->setVisible(m_value.empty());
@@ -1505,7 +1531,7 @@ protected:
             // blink action yet, otherwise the caret can flash at its default position
             // for a frame before the first real focus.
             m_caret->setVisible(false);
-            m_caret->setPosition({TEXT_LEFT, TEXT_TOP - 12.f});
+            m_caret->setPosition({TEXT_LEFT, TEXT_TOP - 14.f});
             m_mainLayer->addChild(m_caret, 7);
         }
 
@@ -1522,6 +1548,14 @@ protected:
         m_counter->setAnchorPoint({1.f, .5f});
         m_counter->setPosition({300.f, 58.f});
         m_mainLayer->addChild(m_counter);
+
+        m_feedbackInfo = CCLabelBMFont::create("", "goldFont.fnt");
+        if (m_feedbackInfo) {
+            m_feedbackInfo->setScale(.22f);
+            m_feedbackInfo->setAnchorPoint({0.f, .5f});
+            m_feedbackInfo->setPosition({40.f, 58.f});
+            m_mainLayer->addChild(m_feedbackInfo, 2);
+        }
 
         auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .58f);
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(FeedbackPopup::onCancel));
@@ -1604,7 +1638,7 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 
     void deleteBackward() {
         if (this == g_feedbackIMEInput && g_feedbackIMEBackspace) {
-            g_feedbackIMEBackspace();
+            if (!feedbackDeleteEventAlreadyHandled()) g_feedbackIMEBackspace();
             return;
         }
         CCTextInputNode::deleteBackward();
@@ -1629,6 +1663,16 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
         }
         return CCTextInputNode::onTextFieldInsertText(sender, text, nLen, keyCodes);
     }
+
+    bool onTextFieldDeleteBackward(CCTextFieldTTF* sender, const char* delText, int nLen) {
+        if (this == g_feedbackIMEInput) {
+            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
+                g_feedbackIMEBackspace();
+            }
+            return true;
+        }
+        return CCTextInputNode::onTextFieldDeleteBackward(sender, delText, nLen);
+    }
 };
 
 // Android can dispatch Backspace directly through CCTextFieldTTF's IME delegate
@@ -1636,8 +1680,8 @@ class $modify(GDRequestsFeedbackIMETextInputNode, CCTextInputNode) {
 // limited to our hidden Feedback input so the existing text/UTF-8 system is untouched.
 class $modify(GDRequestsFeedbackIMETextField, CCTextFieldTTF) {
     void deleteBackward() {
-        if (g_feedbackIMEInput && this->getDelegate() == g_feedbackIMEInput) {
-            if (g_feedbackIMEBackspace) {
+        if (g_feedbackIMEInput && g_feedbackIMEInput->m_textField == this) {
+            if (g_feedbackIMEBackspace && !feedbackDeleteEventAlreadyHandled()) {
                 g_feedbackIMEBackspace();
             }
             return;
@@ -3134,7 +3178,7 @@ protected:
     static constexpr float TEXT_W = SCROLL_W - 20.f;
     static constexpr float TTF_SIZE = 11.f;
     static constexpr float TTF_LINE_STEP = 15.f;
-    static constexpr float INFO_LINE_STEP = 27.f;
+    static constexpr float INFO_LINE_STEP = 30.f;
 
     float measureUnicode(std::string const& value) {
         if (!m_measureLabel || value.empty()) return 0.f;
@@ -3385,7 +3429,7 @@ protected:
             if (difficultyTile) {
                 difficultyTile->setScale(.70f);
                 difficultyTile->setAnchorPoint({1.f, 1.f});
-                difficultyTile->setPosition({SCROLL_W - 7.f, contentH - 5.f});
+                difficultyTile->setPosition({SCROLL_W - 7.f, contentH - 11.f});
                 difficultyTile->setID("kolorbok.gd-send-logger/request-info-difficulty");
                 scroll->m_contentLayer->addChild(difficultyTile, 3);
             }
@@ -3398,7 +3442,7 @@ protected:
         }
 
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) y -= 4.f;
+            if (!infoLines.empty()) y -= 7.f;
             auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
             if (heading) {
                 heading->setScale(.38f);
@@ -3609,7 +3653,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
 
         // Revert to the v2.0.33 plus texture; the v2.0.34 square GameSheet03 plus
         // was not the desired icon in-game.
-        auto* infoSprite = requestIconOrFallback("GJ_plus2Btn_001.png", "+", buttonSize);
+        auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", buttonSize);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
