@@ -3264,9 +3264,6 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         m_pageStartIdx = 0;
         m_pageEndIdx = visibleCount == 0 ? -1 : static_cast<int>(visibleCount - 1);
 
-        if (m_list->m_listView) {
-            m_list->m_listView->reloadData();
-        }
     }
 
     void refreshRequestPageLabels() {
@@ -3352,7 +3349,7 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         LevelBrowserLayer::onPrevPage(sender);
     }
 
-    void setIDPopupClosed(SetIDPopup* popup, int value) {
+    void setIDPopupClosed(SetIDPopup* popup, int value) override {
         if (isThisRequestBrowser()) {
             auto count = requestNativeBatchCount();
             if (count == 0 || value <= 0) return;
