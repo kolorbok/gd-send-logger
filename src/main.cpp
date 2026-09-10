@@ -994,8 +994,35 @@ protected:
         return m_measureLabel->getContentSize().width;
     }
 
+    static bool isCombiningMark(std::string const& glyph) {
+        if (glyph.empty()) return false;
+        auto lead = static_cast<unsigned char>(glyph[0]);
+        unsigned int cp = 0;
+        if ((lead & 0x80) == 0) {
+            cp = lead;
+        } else if ((lead & 0xE0) == 0xC0 && glyph.size() >= 2) {
+            cp = ((lead & 0x1F) << 6) | (static_cast<unsigned char>(glyph[1]) & 0x3F);
+        } else if ((lead & 0xF0) == 0xE0 && glyph.size() >= 3) {
+            cp = ((lead & 0x0F) << 12) |
+                 ((static_cast<unsigned char>(glyph[1]) & 0x3F) << 6) |
+                 (static_cast<unsigned char>(glyph[2]) & 0x3F);
+        } else if ((lead & 0xF8) == 0xF0 && glyph.size() >= 4) {
+            cp = ((lead & 0x07) << 18) |
+                 ((static_cast<unsigned char>(glyph[1]) & 0x3F) << 12) |
+                 ((static_cast<unsigned char>(glyph[2]) & 0x3F) << 6) |
+                 (static_cast<unsigned char>(glyph[3]) & 0x3F);
+        } else {
+            return false;
+        }
+        return (cp >= 0x0300 && cp <= 0x036F) ||
+               (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+               (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+               (cp >= 0x20D0 && cp <= 0x20FF) ||
+               (cp >= 0xFE20 && cp <= 0xFE2F);
+    }
+
     float measuredGlyphWidth(std::string const& glyph) {
-        if (glyph.empty()) return 0.f;
+        if (glyph.empty() || isCombiningMark(glyph)) return 0.f;
         auto it = m_glyphWidthCache.find(glyph);
         if (it != m_glyphWidthCache.end()) return it->second;
         auto width = measuredRawWidth(glyph);
@@ -1311,15 +1338,9 @@ protected:
                     // CCTextFieldTTF cursor position is a character index, not a UTF-8 byte
                     // offset. Using m_cursorByte breaks as soon as the text contains multibyte
                     // characters and becomes especially visible after reopening saved text.
-                    // The hidden native field is only the IME host and can contain a
-                    // different buffer from our visible UTF-8 editor. Never place its
-                    // native cursor past the native string itself: IME composition
-                    // characters (for example a combining acute in "ю́") can otherwise
-                    // make Cocos access an invalid cursor position and crash.
-                    auto nativeText = gdToStd(m_input->getString());
-                    auto nativeChars = utf8CharCount(nativeText);
-                    auto cursor = std::min(nativeChars, utf8CharCount(m_value.substr(0, m_cursorByte)));
-                    node->m_textField->m_uCursorPos = static_cast<int>(cursor);
+                    auto cursor = std::min(m_cursorByte, m_value.size());
+                    auto prefix = m_value.substr(0, cursor);
+                    node->m_textField->m_uCursorPos = static_cast<int>(utf8CharCount(prefix));
                     node->updateBlinkLabel();
                 }
             }
