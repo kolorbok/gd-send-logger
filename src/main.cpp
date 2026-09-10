@@ -1436,6 +1436,17 @@ protected:
             m_caret->stopAllActions();
             m_caret->runAction(CCRepeatForever::create(CCBlink::create(.9f, 1)));
         }
+#if defined(GEODE_IS_ANDROID)
+        // Android IME needs the real native field to contain the current text before focus.
+        // If it is empty when focus/re-focus happens, Backspace can stop working after a save
+        // or after moving the cursor. The custom UTF-8 buffer remains authoritative.
+        if (m_input) {
+            auto native = gdToStd(m_input->getString());
+            if (native != m_value) {
+                m_input->setString(gd::string(m_value.c_str()), false);
+            }
+        }
+#endif
         m_input->focus();
 
         // A hidden CCTextInputNode may asynchronously reset its insertion point to 0 directly
@@ -1627,6 +1638,7 @@ protected:
             g_feedbackIMEInsert = {};
             g_feedbackIMEBackspace = {};
             g_feedbackIMEDelete = {};
+            g_feedbackLastDeleteEvent = {};
         }
         if (m_input) m_input->defocus();
         m_focused = false;
@@ -3491,10 +3503,11 @@ protected:
         }
 
         if (!descriptionLines.empty()) {
-            // DESCRIPTION follows the last real metadata value. The gap is
-            // independent of how many optional metadata fields exist.
+            // After the loop, y is already one full row below the last heading.
+            // The last value is at (y + INFO_LINE_STEP - INFO_VALUE_OFFSET).
+            // Place DESCRIPTION below that value, leaving only the requested gap.
             if (!infoLines.empty()) {
-                y += INFO_LINE_STEP - INFO_VALUE_OFFSET - DESCRIPTION_GAP;
+                y -= DESCRIPTION_GAP;
             }
             auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
             if (heading) {
@@ -3709,7 +3722,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
         // Texture quality can change the source frame's logical dimensions. Cap the
         // displayed info icon to the normal GD button height so low-quality textures
         // cannot make the icon grow disproportionately.
-        float infoTargetHeight = std::clamp(buttonSize, 24.f, 38.f);
+        float infoTargetHeight = buttonSize * .74f;
         auto* infoSprite = requestIconOrFallback("GJ_infoIcon_001.png", "i", infoTargetHeight);
         auto* infoButton = CCMenuItemSpriteExtra::create(
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
