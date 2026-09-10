@@ -3201,6 +3201,8 @@ protected:
     static constexpr float TTF_SIZE = 11.f;
     static constexpr float TTF_LINE_STEP = 15.f;
     static constexpr float INFO_LINE_STEP = 30.f;
+    static constexpr float INFO_VALUE_OFFSET = 15.f;
+    static constexpr float DESCRIPTION_GAP = 4.f;
 
     float measureUnicode(std::string const& value) {
         if (!m_measureLabel || value.empty()) return 0.f;
@@ -3427,7 +3429,7 @@ protected:
         float required = 13.f;
         required += static_cast<float>(infoLines.size()) * INFO_LINE_STEP;
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) required += 6.f;
+            if (!infoLines.empty()) required += DESCRIPTION_GAP;
             required += 16.f;
             required += static_cast<float>(descriptionLines.size()) * TTF_LINE_STEP;
         }
@@ -3460,14 +3462,20 @@ protected:
             }
         }
 
+        // Metadata rows are laid out from the rows that are actually present.
+        // Do not reserve a row for a disabled/missing REVIEW or FEEDBACK field.
         float y = contentH - 10.f;
-        for (auto const& line : infoLines) {
-            addInfoLine(scroll->m_contentLayer, line.first, line.second, y);
+        for (std::size_t i = 0; i < infoLines.size(); ++i) {
+            addInfoLine(scroll->m_contentLayer, infoLines[i].first, infoLines[i].second, y);
             y -= INFO_LINE_STEP;
         }
 
         if (!descriptionLines.empty()) {
-            if (!infoLines.empty()) y -= 7.f;
+            // DESCRIPTION follows the last real metadata value. The gap is
+            // independent of how many optional metadata fields exist.
+            if (!infoLines.empty()) {
+                y += INFO_LINE_STEP - INFO_VALUE_OFFSET - DESCRIPTION_GAP;
+            }
             auto* heading = CCLabelBMFont::create("DESCRIPTION", "goldFont.fnt");
             if (heading) {
                 heading->setScale(.38f);
