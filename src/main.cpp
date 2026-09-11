@@ -770,7 +770,6 @@ static bool parseRequestsResponse(std::string const& text) {
     g_requestByLevel.clear();
     g_requestList.clear();
     g_requestNativeBatch = 0;
-    g_requestNativeSubPage = 0;
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
