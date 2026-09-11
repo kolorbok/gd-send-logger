@@ -2289,7 +2289,7 @@ static CCSprite* makeSendTypeIcon(std::string const& type) {
     if (sprite) {
         auto sz = sprite->getContentSize();
         if (sz.width > 0.f && sz.height > 0.f) {
-            float scale = 34.f / std::max(sz.width, sz.height);
+            float scale = 31.f / std::max(sz.width, sz.height);
             sprite->setScale(scale);
             sprite->setOpacity(255);
             sprite->setColor(ccc3(255, 255, 255));
@@ -2344,10 +2344,9 @@ protected:
 
         auto* text = CCLabelBMFont::create(label, "goldFont.fnt");
         if (text) {
-            text->setScale(.30f);
-            text->setAnchorPoint({0.f, .5f});
+            text->setScale(.27f);
             text->setAnchorPoint({0.5f, 1.f});
-            text->setPosition({position.x, position.y - 13.f});
+            text->setPosition({position.x, position.y - 9.f});
             m_mainLayer->addChild(text, 4);
         }
     }
@@ -2360,11 +2359,12 @@ protected:
         m_types = selectedTypes;
         m_sources = selectedSources;
         m_onApply = std::move(onApply);
-        if (!Popup::init(300.f, 215.f)) return false;
-        setTitle("SEND TYPE", "goldFont.fnt", .56f, 18.f);
+        if (!Popup::init(270.f, 190.f)) return false;
+        setTitle("SEND TYPE", "goldFont.fnt", .52f, 16.f);
 
-        constexpr float xs[] = {95.f, 150.f, 205.f};
-        constexpr float ys[] = {128.f, 73.f};
+        // Compact, centered 3x2 grid. Keep all six choices tightly grouped around the popup center.
+        constexpr float xs[] = {95.f, 135.f, 175.f};
+        constexpr float ys[] = {112.f, 72.f};
         std::vector<std::string> types = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
         for (std::size_t i = 0; i < types.size(); ++i) {
             auto const& type = types[i];
@@ -2380,13 +2380,13 @@ protected:
 
         // The source selectors are deliberately independent CCMenuItemTogglers. No callback
         // changes another toggle, so Helpers + Mods + Me can all remain checked together.
-        addSource("helpers", "HELPERS", {45.f, 34.f});
-        addSource("moderators", "MODS", {100.f, 34.f});
-        addSource("me", "ME", {155.f, 34.f});
+        addSource("helpers", "HELPERS", {50.f, 25.f});
+        addSource("moderators", "MODS", {90.f, 25.f});
+        addSource("me", "ME", {130.f, 25.f});
 
-        auto* applySpr = ButtonSprite::create("APPLY", 74, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .46f);
+        auto* applySpr = ButtonSprite::create("APPLY", 70, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .43f);
         auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(SendTypePickerPopup::onApply));
-        applyBtn->setPosition({235.f, 34.f});
+        applyBtn->setPosition({210.f, 25.f});
         applyBtn->setSizeMult(1.f);
         m_buttonMenu->addChild(applyBtn, 4);
 
