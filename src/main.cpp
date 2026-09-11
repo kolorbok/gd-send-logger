@@ -2279,7 +2279,7 @@ static CCSprite* makeSendTypeIcon(std::string const& type) {
         if (!frame) return nullptr;
         auto* sprite = CCSprite::createWithSpriteFrame(frame);
         if (sprite) {
-            sprite->setScale(.78f);
+            sprite->setScale(.70f);
             sprite->setOpacity(255);
             sprite->setColor(ccc3(255, 255, 255));
         }
@@ -2289,7 +2289,7 @@ static CCSprite* makeSendTypeIcon(std::string const& type) {
     if (sprite) {
         auto sz = sprite->getContentSize();
         if (sz.width > 0.f && sz.height > 0.f) {
-            float scale = 40.f / std::max(sz.width, sz.height);
+            float scale = 34.f / std::max(sz.width, sz.height);
             sprite->setScale(scale);
             sprite->setOpacity(255);
             sprite->setColor(ccc3(255, 255, 255));
@@ -2325,7 +2325,7 @@ protected:
             icon->setOpacity(255);
             icon->setColor(typeSelected(type) ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             button->setSprite(icon);
-            button->setSizeMult(1.15f);
+            button->setSizeMult(1.0f);
             button->setOpacity(255);
         }
     }
@@ -2347,7 +2347,7 @@ protected:
             text->setScale(.30f);
             text->setAnchorPoint({0.f, .5f});
             text->setAnchorPoint({0.5f, 1.f});
-            text->setPosition({position.x, position.y - 11.f});
+            text->setPosition({position.x, position.y - 13.f});
             m_mainLayer->addChild(text, 4);
         }
     }
@@ -2360,11 +2360,11 @@ protected:
         m_types = selectedTypes;
         m_sources = selectedSources;
         m_onApply = std::move(onApply);
-        if (!Popup::init(350.f, 250.f)) return false;
-        setTitle("SEND TYPE", "goldFont.fnt", .60f, 18.f);
+        if (!Popup::init(300.f, 215.f)) return false;
+        setTitle("SEND TYPE", "goldFont.fnt", .56f, 18.f);
 
-        constexpr float xs[] = {55.f, 155.f, 255.f};
-        constexpr float ys[] = {145.f, 80.f};
+        constexpr float xs[] = {95.f, 150.f, 205.f};
+        constexpr float ys[] = {128.f, 73.f};
         std::vector<std::string> types = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
         for (std::size_t i = 0; i < types.size(); ++i) {
             auto const& type = types[i];
@@ -2373,20 +2373,20 @@ protected:
             auto* button = CCMenuItemSpriteExtra::create(icon, this, menu_selector(SendTypePickerPopup::onTypeToggle));
             button->setUserObject(CCString::create(type.c_str()));
             button->setPosition({xs[i % 3], ys[i / 3]});
-            button->setSizeMult(1.15f);
+            button->setSizeMult(1.0f);
             m_buttonMenu->addChild(button, 3);
             m_typeButtons.emplace_back(type, button);
         }
 
         // The source selectors are deliberately independent CCMenuItemTogglers. No callback
         // changes another toggle, so Helpers + Mods + Me can all remain checked together.
-        addSource("helpers", "HELPERS", {38.f, 24.f});
-        addSource("moderators", "MODS", {108.f, 24.f});
-        addSource("me", "ME", {178.f, 24.f});
+        addSource("helpers", "HELPERS", {45.f, 34.f});
+        addSource("moderators", "MODS", {100.f, 34.f});
+        addSource("me", "ME", {155.f, 34.f});
 
-        auto* applySpr = ButtonSprite::create("APPLY", 78, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .48f);
+        auto* applySpr = ButtonSprite::create("APPLY", 74, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .46f);
         auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(SendTypePickerPopup::onApply));
-        applyBtn->setPosition({252.f, 24.f});
+        applyBtn->setPosition({235.f, 34.f});
         applyBtn->setSizeMult(1.f);
         m_buttonMenu->addChild(applyBtn, 4);
 
