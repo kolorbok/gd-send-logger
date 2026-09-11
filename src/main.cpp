@@ -2380,13 +2380,13 @@ protected:
 
         // The source selectors are deliberately independent CCMenuItemTogglers. No callback
         // changes another toggle, so Helpers + Mods + Me can all remain checked together.
-        addSource("helpers", "HELPERS", {50.f, 25.f});
-        addSource("moderators", "MODS", {90.f, 25.f});
-        addSource("me", "ME", {130.f, 25.f});
+        addSource("helpers", "HELPERS", {38.f, 25.f});
+        addSource("moderators", "MODS", {78.f, 25.f});
+        addSource("me", "ME", {118.f, 25.f});
 
         auto* applySpr = ButtonSprite::create("APPLY", 70, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .43f);
         auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(SendTypePickerPopup::onApply));
-        applyBtn->setPosition({210.f, 25.f});
+        applyBtn->setPosition({198.f, 25.f});
         applyBtn->setSizeMult(1.f);
         m_buttonMenu->addChild(applyBtn, 4);
 
