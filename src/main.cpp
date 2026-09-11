@@ -177,8 +177,9 @@ struct RequestFilters {
     // Empty = any difficulty. Otherwise every key in this vector is accepted.
     std::vector<std::string> difficulties;
     std::string levelType = "all";
-    std::string status = "unchecked";
-    std::string minSend = "any";
+    std::string status = "my_unchecked";
+    std::vector<std::string> sendTypes;
+    std::vector<std::string> sendSources;
     std::string rated = "all";
     std::string video = "any";
     std::string feedbackNeeded = "any";
@@ -680,6 +681,15 @@ static void sendTestRequest() {
     reportSend(snapshot, true, nullptr);
 }
 
+static std::string joinRequestFilter(std::vector<std::string> const& values) {
+    std::string out;
+    for (auto const& value : values) {
+        if (!out.empty()) out += ",";
+        out += value;
+    }
+    return out;
+}
+
 static std::string requestURL() {
     std::string mode = g_client.mode.empty() ? "auto" : g_client.mode;
     if (!g_requestBrowserActive) mode = "auto";
@@ -691,7 +701,8 @@ static std::string requestURL() {
         "&difficulty=all" +
         "&type=" + g_filters.levelType +
         "&status=" + g_filters.status +
-        "&minSend=" + g_filters.minSend +
+        "&sendType=" + joinRequestFilter(g_filters.sendTypes) +
+        "&sendBy=" + joinRequestFilter(g_filters.sendSources) +
         "&rated=all" +
         "&sort=newest" +
         "&limit=50000";
@@ -759,6 +770,7 @@ static bool parseRequestsResponse(std::string const& text) {
     g_requestByLevel.clear();
     g_requestList.clear();
     g_requestNativeBatch = 0;
+    g_requestNativeSubPage = 0;
     bool gotMeta = false;
 
     while (std::getline(stream, line)) {
@@ -1911,8 +1923,9 @@ static std::vector<std::string> const DIFFICULTIES = {
     "demon-easy", "demon-medium", "demon-hard", "demon-insane", "demon-extreme"
 };
 static std::vector<std::string> const LEVEL_TYPES = {"all", "classic", "platformer"};
-static std::vector<std::string> const STATUSES = {"unchecked", "sent", "rejected", "all"};
-static std::vector<std::string> const MIN_SENDS = {"any", "star_rate", "featured", "epic", "legendary", "mythic"};
+static std::vector<std::string> const STATUSES = {"my_unchecked", "team_unchecked", "sent", "rejected", "all"};
+static std::vector<std::string> const SEND_TYPES = {"star_rate", "featured", "epic", "legendary", "mythic"};
+static std::vector<std::string> const SEND_SOURCES = {"helpers", "moderators", "me"};
 static std::vector<std::string> const RATED = {"all", "unrated", "rated"};
 static std::vector<std::string> const VIDEOS = {"any", "with", "without"};
 static std::vector<std::string> const FEEDBACK_NEEDED = {"any", "needed", "not_needed"};
@@ -1942,18 +1955,26 @@ static std::string prettyType(std::string const& v) {
     return "Any";
 }
 static std::string prettyStatus(std::string const& v) {
-    if (v == "unchecked") return "Not checked";
+    if (v == "my_unchecked") return "My unchecked";
+    if (v == "team_unchecked") return g_client.mode == "moderator" ? "Mods unchecked" : "Helpers unchecked";
     if (v == "sent") return "Sent";
     if (v == "rejected") return "Rejected";
     return "All";
 }
-static std::string prettyMinSend(std::string const& v) {
-    if (v == "star_rate") return "Rate+";
-    if (v == "featured") return "Featured+";
-    if (v == "epic") return "Epic+";
-    if (v == "legendary") return "Legendary+";
-    if (v == "mythic") return "Mythic";
-    return "Any";
+static std::string prettySendTypes(std::vector<std::string> const& v) {
+    if (v.empty()) return "Any";
+    if (v.size() == 1) {
+        if (v[0] == "star_rate") return "Rate";
+        if (v[0] == "featured") return "Featured";
+        if (v[0] == "epic") return "Epic";
+        if (v[0] == "legendary") return "Legendary";
+        if (v[0] == "mythic") return "Mythic";
+    }
+    return std::to_string(v.size()) + " selected";
+}
+static std::string prettySendSources(std::vector<std::string> const& v) {
+    if (v.empty()) return "Any";
+    return std::to_string(v.size()) + " sources";
 }
 static std::string prettyRated(std::string const& v) {
     if (v == "rated") return "Rated";
@@ -2210,14 +2231,160 @@ public:
     }
 };
 
+class SendTypePickerPopup final : public geode::Popup {
+protected:
+    std::vector<std::string> m_types;
+    std::vector<std::string> m_sources;
+    std::function<void(std::vector<std::string> const&, std::vector<std::string> const&)> m_onApply;
+    std::vector<std::pair<std::string, CCMenuItemSpriteExtra*>> m_tiles;
+    std::vector<std::pair<std::string, CCMenuItemToggler*>> m_sourceToggles;
+
+    bool has(std::vector<std::string> const& values, std::string const& key) const {
+        return std::find(values.begin(), values.end(), key) != values.end();
+    }
+
+    static char const* frameFor(std::string const& key) {
+        if (key == "featured") return "GJ_featuredIcon_001.png";
+        if (key == "epic") return "GJ_epicIcon_001.png";
+        if (key == "legendary") return "GJ_legendaryIcon_001.png";
+        if (key == "mythic") return "GJ_mythicIcon_001.png";
+        if (key == "all") return "GJ_searchIcon_001.png";
+        return "GJ_starsIcon_001.png";
+    }
+
+    static CCSprite* makeIcon(std::string const& key, bool selected) {
+        auto* spr = CCSprite::createWithSpriteFrameName(frameFor(key));
+        if (!spr) spr = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
+        if (!spr) return nullptr;
+        // Normalize against a native GD star icon so the picker keeps the same visual
+        // size across Low/Medium/High texture-quality atlases.
+        auto* ref = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png");
+        float targetH = ref && ref->getContentSize().height > 0.f ? ref->getContentSize().height * 1.05f : 32.f;
+        if (spr->getContentSize().height > 0.f) spr->setScale(targetH / spr->getContentSize().height);
+        spr->setOpacity(255);
+        spr->setColor(selected ? ccc3(255,255,255) : ccc3(166,166,166));
+        return spr;
+    }
+
+    void refresh() {
+        for (auto& [key, btn] : m_tiles) {
+            if (!btn) continue;
+            btn->setSprite(makeIcon(key, key == "all" ? m_types.empty() : has(m_types, key)));
+            btn->setSizeMult(1.f);
+        }
+        for (auto& [key, toggle] : m_sourceToggles) {
+            if (!toggle) continue;
+            bool on = has(m_sources, key);
+            toggle->toggle(on);
+        }
+    }
+
+    bool initFor(
+        std::vector<std::string> const& types,
+        std::vector<std::string> const& sources,
+        std::function<void(std::vector<std::string> const&, std::vector<std::string> const&)> onApply
+    ) {
+        m_types = types;
+        m_sources = sources;
+        m_onApply = std::move(onApply);
+        if (!Popup::init(350.f, 275.f)) return false;
+        setTitle("SEND TYPE", "goldFont.fnt", .58f, 20.f);
+
+        constexpr float xs[] = {55.f, 125.f, 195.f, 265.f};
+        constexpr float ys[] = {185.f, 125.f};
+        std::vector<std::string> choices = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
+        for (std::size_t i = 0; i < choices.size(); ++i) {
+            auto const& key = choices[i];
+            auto* btn = CCMenuItemSpriteExtra::create(
+                makeIcon(key, key == "all" ? m_types.empty() : has(m_types, key)),
+                this, menu_selector(SendTypePickerPopup::onTypeToggle)
+            );
+            if (!btn) continue;
+            btn->setUserObject(CCString::create(key.c_str()));
+            btn->setPosition({xs[i % 4], ys[i / 4]});
+            btn->setSizeMult(1.f);
+            m_buttonMenu->addChild(btn);
+            m_tiles.emplace_back(key, btn);
+        }
+
+        addSource("HELPERS", "helpers", {80.f, 78.f});
+        addSource("MODS", "moderators", {175.f, 78.f});
+        addSource("ME", "me", {270.f, 78.f});
+
+        auto* applySpr = ButtonSprite::create("APPLY", 82, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .55f);
+        auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(SendTypePickerPopup::onApply));
+        applyBtn->setPosition({245.f, 28.f});
+        applyBtn->setSizeMult(1.f);
+        m_buttonMenu->addChild(applyBtn);
+        auto* clearSpr = ButtonSprite::create("CLEAR", 82, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .55f);
+        auto* clearBtn = CCMenuItemSpriteExtra::create(clearSpr, this, menu_selector(SendTypePickerPopup::onClear));
+        clearBtn->setPosition({105.f, 28.f});
+        clearBtn->setSizeMult(1.f);
+        m_buttonMenu->addChild(clearBtn);
+        refresh();
+        return true;
+    }
+
+    void addSource(char const* label, char const* key, CCPoint pos) {
+        auto* toggle = CCMenuItemToggler::createWithStandardSprites(this, menu_selector(SendTypePickerPopup::onSourceToggle), .46f);
+        if (!toggle) return;
+        toggle->setUserObject(CCString::create(key));
+        toggle->setPosition({pos.x - 30.f, pos.y});
+        toggle->setSizeMult(1.f);
+        m_buttonMenu->addChild(toggle);
+        m_sourceToggles.emplace_back(key, toggle);
+        auto* text = CCLabelBMFont::create(label, "goldFont.fnt");
+        if (text) { text->setScale(.32f); text->setPosition({pos.x + 8.f, pos.y}); m_mainLayer->addChild(text, 2); }
+    }
+
+    void onTypeToggle(CCObject* sender) {
+        auto* node = typeinfo_cast<CCNode*>(sender);
+        auto* value = node ? typeinfo_cast<CCString*>(node->getUserObject()) : nullptr;
+        if (!value) return;
+        auto key = std::string(value->getCString());
+        if (key == "all") m_types.clear();
+        else {
+            auto it = std::find(m_types.begin(), m_types.end(), key);
+            if (it == m_types.end()) m_types.push_back(key); else m_types.erase(it);
+        }
+        refresh();
+    }
+
+    void onSourceToggle(CCObject* sender) {
+        auto* node = typeinfo_cast<CCNode*>(sender);
+        auto* value = node ? typeinfo_cast<CCString*>(node->getUserObject()) : nullptr;
+        if (!value) return;
+        auto key = std::string(value->getCString());
+        auto it = std::find(m_sources.begin(), m_sources.end(), key);
+        if (it == m_sources.end()) m_sources.push_back(key); else m_sources.erase(it);
+        refresh();
+    }
+
+    void onClear(CCObject*) { m_types.clear(); m_sources.clear(); refresh(); }
+    void onApply(CCObject*) { if (m_onApply) m_onApply(m_types, m_sources); onClose(nullptr); }
+
+public:
+    static SendTypePickerPopup* create(
+        std::vector<std::string> const& types,
+        std::vector<std::string> const& sources,
+        std::function<void(std::vector<std::string> const&, std::vector<std::string> const&)> onApply
+    ) {
+        auto* ret = new SendTypePickerPopup();
+        if (ret && ret->initFor(types, sources, std::move(onApply))) { ret->autorelease(); return ret; }
+        delete ret;
+        return nullptr;
+    }
+};
+
 class RequestFiltersPopup final : public geode::Popup {
 protected:
     RequestFilters m_working;
     CCMenuItemSpriteExtra* m_difficultyButton = nullptr;
+    CCMenuItemSpriteExtra* m_sendTypeButton = nullptr;
     CCLabelBMFont* m_difficulty = nullptr;
+    CCLabelBMFont* m_sendType = nullptr;
     CCLabelBMFont* m_type = nullptr;
     CCLabelBMFont* m_status = nullptr;
-    CCLabelBMFont* m_minSend = nullptr;
     CCLabelBMFont* m_rated = nullptr;
     CCLabelBMFont* m_video = nullptr;
     CCLabelBMFont* m_feedbackNeeded = nullptr;
@@ -2225,265 +2392,67 @@ protected:
     bool m_staff = false;
     bool m_reviewer = false;
 
-    // Native GD-style rounded dark overlays. The popup itself keeps its normal
-    // background; these shapes only darken it. The corner radius is deliberately
-    // small (selector-style), not a modern pill/capsule.
     void addDarkRoundedRect(CCPoint position, CCSize size, float radius, GLubyte opacity, int z) {
-        auto* shape = CCDrawNode::create();
-        if (!shape) return;
-
+        auto* shape = CCDrawNode::create(); if (!shape) return;
         radius = std::max(0.f, std::min(radius, std::min(size.width, size.height) * .5f));
-        constexpr int steps = 5;
-        std::vector<CCPoint> points;
-        points.reserve(steps * 4 + 4);
+        constexpr int steps = 5; std::vector<CCPoint> points; points.reserve(steps * 4 + 4);
+        const float hw = size.width*.5f, hh = size.height*.5f;
+        const CCPoint centers[] = {{hw-radius,hh-radius},{-hw+radius,hh-radius},{-hw+radius,-hh+radius},{hw-radius,-hh+radius}};
+        const float starts[] = {0.f,90.f,180.f,270.f}; constexpr float pi=3.14159265358979323846f;
+        for(int c=0;c<4;++c) for(int i=0;i<=steps;++i){float a=(starts[c]+i*90.f/steps)*pi/180.f;points.push_back({centers[c].x+std::cos(a)*radius,centers[c].y+std::sin(a)*radius});}
+        shape->drawPolygon(points.data(), static_cast<unsigned int>(points.size()), ccc4f(0,0,0,static_cast<float>(opacity)/255.f),0.f,ccc4f(0,0,0,0));
+        shape->setPosition(position); m_mainLayer->addChild(shape,z);
+    }
+    void addPanel(CCPoint p, CCSize s){addDarkRoundedRect(p,s,8.f,40,-1);}
+    void addText(char const* t,CCPoint p,float scale=.36f,char const* f="goldFont.fnt"){auto* l=CCLabelBMFont::create(t,f);if(!l)return;l->setScale(scale);l->setPosition(p);m_mainLayer->addChild(l,2);}
+    void addField(CCPoint p,float w=102.f,float h=28.f){addDarkRoundedRect(p,{w,h},5.f,82,0);}
+    CCLabelBMFont* addValue(CCPoint p){auto*l=CCLabelBMFont::create("","bigFont.fnt");if(!l)return nullptr;l->setScale(.40f);l->setPosition(p);m_mainLayer->addChild(l,2);return l;}
+    void addArrow(CCPoint p,bool right,SEL_MenuHandler h){auto*s=CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");if(!s)return;s->setScale(.52f);s->setFlipX(right);auto*b=CCMenuItemSpriteExtra::create(s,this,h);b->setPosition(p);b->setSizeMult(1.f);m_buttonMenu->addChild(b,3);}
+    void addCycleRow(char const* title,CCLabelBMFont*& value,float x,float y,SEL_MenuHandler left,SEL_MenuHandler right){constexpr float gap=14.f;addText(title,{x,y+22},.36f);addField({x,y});value=addValue({x,y});addArrow({x-51.f-gap,y},false,left);addArrow({x+51.f+gap,y},true,right);}
 
-        const float hw = size.width * .5f;
-        const float hh = size.height * .5f;
-        const CCPoint centers[] = {
-            { hw - radius,  hh - radius},
-            {-hw + radius,  hh - radius},
-            {-hw + radius, -hh + radius},
-            { hw - radius, -hh + radius},
-        };
-        const float starts[] = {0.f, 90.f, 180.f, 270.f};
-        constexpr float pi = 3.14159265358979323846f;
-        for (int corner = 0; corner < 4; ++corner) {
-            for (int i = 0; i <= steps; ++i) {
-                float angle = (starts[corner] + i * 90.f / steps) * pi / 180.f;
-                points.push_back({
-                    centers[corner].x + std::cos(angle) * radius,
-                    centers[corner].y + std::sin(angle) * radius
-                });
-            }
+    void refresh(){
+        if(m_difficulty){auto text=m_working.difficulties.empty()?std::string("ANY DIFFICULTY"):std::to_string(m_working.difficulties.size())+" DIFFICULTIES";m_difficulty->setString(text.c_str());m_difficulty->setScale(text.size()>13?.34f:.42f);}
+        if(m_sendType){auto text=prettySendTypes(m_working.sendTypes);m_sendType->setString(text.c_str());m_sendType->setScale(text.size()>11?.34f:.42f);}
+        if(m_type)m_type->setString(prettyType(m_working.levelType).c_str());
+        if(m_status)m_status->setString(prettyStatus(m_working.status).c_str());
+        if(m_rated)m_rated->setString(prettyRated(m_working.rated).c_str());
+        if(m_video)m_video->setString(prettyVideo(m_working.video).c_str());
+        if(m_feedbackNeeded)m_feedbackNeeded->setString(prettyFeedbackNeeded(m_working.feedbackNeeded).c_str());
+        if(m_sort)m_sort->setString(prettySort(m_working.sort).c_str());
+    }
+    bool initFor(){
+        m_working=g_filters;m_staff=g_client.mode=="helper"||g_client.mode=="moderator";m_reviewer=g_client.mode=="reviewer";
+        float height=m_staff?270.f:220.f;constexpr float width=400.f;if(!Popup::init(width,height))return false;setTitle("REQUEST FILTERS","goldFont.fnt",.60f,15.f);
+        addPanel({width/2.f,height/2.f-4.f},{356.f,m_staff?188.f:144.f});constexpr float leftX=115.f,rightX=285.f;float topY=m_staff?214.f:162.f;
+        addText("DIFFICULTY",{leftX,topY+22},.36f);addField({leftX,topY});m_difficulty=CCLabelBMFont::create("ANY DIFFICULTY","bigFont.fnt");
+        if(m_difficulty){m_difficulty->setScale(.40f);m_difficultyButton=CCMenuItemSpriteExtra::create(m_difficulty,this,menu_selector(RequestFiltersPopup::onDifficultyPicker));}
+        if(m_difficultyButton){m_difficultyButton->setPosition({leftX,topY});m_difficultyButton->setSizeMult(1.f);m_buttonMenu->addChild(m_difficultyButton,3);}
+        addCycleRow("TYPE",m_type,rightX,topY,menu_selector(RequestFiltersPopup::typePrev),menu_selector(RequestFiltersPopup::typeNext));
+        float y=topY-46.f;
+        if(m_staff){
+            addCycleRow("STATUS",m_status,leftX,y,menu_selector(RequestFiltersPopup::statusPrev),menu_selector(RequestFiltersPopup::statusNext));
+            addText("SEND TYPE",{rightX,y+22},.36f);addField({rightX,y});m_sendType=CCLabelBMFont::create("Any","bigFont.fnt");
+            if(m_sendType){m_sendType->setScale(.40f);m_sendTypeButton=CCMenuItemSpriteExtra::create(m_sendType,this,menu_selector(RequestFiltersPopup::onSendTypePicker));}
+            if(m_sendTypeButton){m_sendTypeButton->setPosition({rightX,y});m_sendTypeButton->setSizeMult(1.f);m_buttonMenu->addChild(m_sendTypeButton,3);} y-=46.f;
         }
-
-        shape->drawPolygon(
-            points.data(), static_cast<unsigned int>(points.size()),
-            ccc4f(0.f, 0.f, 0.f, static_cast<float>(opacity) / 255.f),
-            0.f, ccc4f(0.f, 0.f, 0.f, 0.f)
-        );
-        shape->setPosition(position);
-        m_mainLayer->addChild(shape, z);
+        addCycleRow("RATED",m_rated,leftX,y,menu_selector(RequestFiltersPopup::ratedPrev),menu_selector(RequestFiltersPopup::ratedNext));
+        addCycleRow("HAS VIDEO",m_video,rightX,y,menu_selector(RequestFiltersPopup::videoPrev),menu_selector(RequestFiltersPopup::videoNext)); y-=46.f;
+        addCycleRow(m_reviewer?"REVIEW NEEDED":"FEEDBACK NEEDED",m_feedbackNeeded,leftX,y,menu_selector(RequestFiltersPopup::feedbackPrev),menu_selector(RequestFiltersPopup::feedbackNext));
+        addCycleRow("SORT",m_sort,rightX,y,menu_selector(RequestFiltersPopup::sortPrev),menu_selector(RequestFiltersPopup::sortNext));
+        auto* resetSpr=ButtonSprite::create("RESET",104,true,"bigFont.fnt","GJ_button_04.png",30.f,.56f);auto* resetBtn=CCMenuItemSpriteExtra::create(resetSpr,this,menu_selector(RequestFiltersPopup::onReset));resetBtn->setPosition({112,31});resetBtn->setSizeMult(1.f);m_buttonMenu->addChild(resetBtn,3);
+        auto* applySpr=ButtonSprite::create("APPLY",104,true,"bigFont.fnt","GJ_button_01.png",30.f,.56f);auto* applyBtn=CCMenuItemSpriteExtra::create(applySpr,this,menu_selector(RequestFiltersPopup::onApply));applyBtn->setPosition({288,31});applyBtn->setSizeMult(1.f);m_buttonMenu->addChild(applyBtn,3);refresh();return true;
     }
-
-    // Keep the popup itself in the native/default GD colour. This is only a
-    // subtle translucent layer behind the controls.
-    void addPanel(CCPoint position, CCSize size) {
-        addDarkRoundedRect(position, size, 8.f, 40, -1);
-    }
-
-    void addText(char const* text, CCPoint position, float scale = .36f, char const* font = "goldFont.fnt") {
-        auto* label = CCLabelBMFont::create(text, font);
-        if (!label) return;
-        label->setScale(scale);
-        label->setPosition(position);
-        m_mainLayer->addChild(label, 2);
-    }
-
-    void addField(CCPoint position, float width = 112.f, float height = 30.f) {
-        // Match GD selector proportions: a modest rounded rectangle, no visible
-        // border and no separate fill colour. It simply darkens the popup below.
-        addDarkRoundedRect(position, {width, height}, 5.f, 82, 0);
-    }
-
-    CCLabelBMFont* addValue(CCPoint position) {
-        auto* label = CCLabelBMFont::create("", "bigFont.fnt");
-        if (!label) return nullptr;
-        label->setScale(.40f);
-        label->setPosition(position);
-        m_mainLayer->addChild(label, 2);
-        return label;
-    }
-
-    void addArrow(CCPoint position, bool right, SEL_MenuHandler handler) {
-        auto* spr = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
-        if (!spr) return;
-        // Native arrow texture kept unchanged; scale it to approximately the
-        // same visual height as a compact selector field.
-        spr->setScale(.52f);
-        spr->setFlipX(right);
-        auto* btn = CCMenuItemSpriteExtra::create(spr, this, handler);
-        btn->setPosition(position);
-        btn->setSizeMult(1.f);
-        m_buttonMenu->addChild(btn, 3);
-    }
-
-    void addCycleRow(
-        char const* title,
-        CCLabelBMFont*& value,
-        float centerX,
-        float y,
-        SEL_MenuHandler left,
-        SEL_MenuHandler right
-    ) {
-        constexpr float fieldW = 102.f;
-        constexpr float fieldH = 28.f;
-        // Keep the native arrow size unchanged. Place the menu-item centres using
-        // the same field geometry on both sides so every arrow sits exactly on
-        // the horizontal centreline of its selector.
-        constexpr float gap = 14.f;
-        addText(title, {centerX, y + 22.f}, .36f);
-        addField({centerX, y}, fieldW, fieldH);
-        value = addValue({centerX, y});
-        // Arrows are tight to the field instead of floating in empty space.
-        addArrow({centerX - fieldW / 2.f - gap, y}, false, left);
-        addArrow({centerX + fieldW / 2.f + gap, y}, true, right);
-    }
-
-    void normalizeDependentFilters() {
-        if (m_working.status == "unchecked" || m_working.status == "rejected") {
-            m_working.minSend = "any";
-        }
-    }
-
-    void refresh() {
-        normalizeDependentFilters();
-        if (m_difficulty) {
-            auto text = m_working.difficulties.empty()
-                ? std::string("ANY DIFFICULTY")
-                : std::to_string(m_working.difficulties.size()) + " DIFFICULTIES";
-            m_difficulty->setString(text.c_str());
-            m_difficulty->setScale(text.size() > 13 ? .34f : .42f);
-        }
-        if (m_type) m_type->setString(prettyType(m_working.levelType).c_str());
-        if (m_status) m_status->setString(prettyStatus(m_working.status).c_str());
-        if (m_minSend) m_minSend->setString(prettyMinSend(m_working.minSend).c_str());
-        if (m_rated) m_rated->setString(prettyRated(m_working.rated).c_str());
-        if (m_video) m_video->setString(prettyVideo(m_working.video).c_str());
-        if (m_feedbackNeeded) m_feedbackNeeded->setString(prettyFeedbackNeeded(m_working.feedbackNeeded).c_str());
-        if (m_sort) m_sort->setString(prettySort(m_working.sort).c_str());
-    }
-
-    bool initFor() {
-        m_working = g_filters;
-        m_staff = g_client.mode == "helper" || g_client.mode == "moderator";
-        m_reviewer = g_client.mode == "reviewer";
-
-        // Compact two-column layout: smaller selectors, tighter buttons and the whole
-        // filter grid lifted upward so the popup does not waste its upper area.
-        float height = m_staff ? 270.f : 220.f;
-        constexpr float width = 400.f;
-        if (!Popup::init(width, height)) return false;
-        setTitle("REQUEST FILTERS", "goldFont.fnt", .60f, 15.f);
-
-        // Single semi-transparent dark rounded background behind the whole grid.
-        addPanel({width / 2.f, height / 2.f - 4.f}, {356.f, m_staff ? 188.f : 144.f});
-
-        constexpr float leftX = 115.f;
-        constexpr float rightX = 285.f;
-        // The previous pass lifted the grid too high; bring it down slightly
-        // while keeping the compact spacing and the popup size unchanged.
-        // Lift the complete filter grid a little without changing popup size.
-        float topY = m_staff ? 214.f : 162.f;
-
-        // Difficulty is a clickable selector itself. No extra arrow is drawn.
-        addText("DIFFICULTY", {leftX, topY + 22.f}, .36f);
-        addField({leftX, topY}, 102.f, 28.f);
-        m_difficulty = CCLabelBMFont::create("ANY DIFFICULTY", "bigFont.fnt");
-        if (m_difficulty) {
-            m_difficulty->setScale(.40f);
-            m_difficultyButton = CCMenuItemSpriteExtra::create(
-                m_difficulty, this, menu_selector(RequestFiltersPopup::onDifficultyPicker)
-            );
-        }
-        if (m_difficultyButton) {
-            m_difficultyButton->setPosition({leftX, topY});
-            m_difficultyButton->setSizeMult(1.f);
-            m_buttonMenu->addChild(m_difficultyButton, 3);
-        }
-
-        addCycleRow("TYPE", m_type, rightX, topY,
-            menu_selector(RequestFiltersPopup::typePrev), menu_selector(RequestFiltersPopup::typeNext));
-
-        float y = topY - 46.f;
-        if (m_staff) {
-            addCycleRow("MY STATUS", m_status, leftX, y,
-                menu_selector(RequestFiltersPopup::statusPrev), menu_selector(RequestFiltersPopup::statusNext));
-            addCycleRow("MY SEND", m_minSend, rightX, y,
-                menu_selector(RequestFiltersPopup::sendPrev), menu_selector(RequestFiltersPopup::sendNext));
-            y -= 46.f;
-        }
-
-        addCycleRow("RATED", m_rated, leftX, y,
-            menu_selector(RequestFiltersPopup::ratedPrev), menu_selector(RequestFiltersPopup::ratedNext));
-        addCycleRow("HAS VIDEO", m_video, rightX, y,
-            menu_selector(RequestFiltersPopup::videoPrev), menu_selector(RequestFiltersPopup::videoNext));
-        y -= 46.f;
-
-        addCycleRow(m_reviewer ? "REVIEW NEEDED" : "FEEDBACK NEEDED", m_feedbackNeeded, leftX, y,
-            menu_selector(RequestFiltersPopup::feedbackPrev), menu_selector(RequestFiltersPopup::feedbackNext));
-        addCycleRow("SORT", m_sort, rightX, y,
-            menu_selector(RequestFiltersPopup::sortPrev), menu_selector(RequestFiltersPopup::sortNext));
-
-        auto* resetSpr = ButtonSprite::create("RESET", 104, true, "bigFont.fnt", "GJ_button_04.png", 30.f, .56f);
-        auto* resetBtn = CCMenuItemSpriteExtra::create(resetSpr, this, menu_selector(RequestFiltersPopup::onReset));
-        resetBtn->setPosition({112.f, 31.f});
-        resetBtn->setSizeMult(1.f);
-        m_buttonMenu->addChild(resetBtn, 3);
-
-        auto* applySpr = ButtonSprite::create("APPLY", 104, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .56f);
-        auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(RequestFiltersPopup::onApply));
-        applyBtn->setPosition({288.f, 31.f});
-        applyBtn->setSizeMult(1.f);
-        m_buttonMenu->addChild(applyBtn, 3);
-
-        refresh();
-        return true;
-    }
-
-    void onDifficultyPicker(CCObject*) {
-        if (auto* popup = DifficultyPickerPopup::create(
-            m_working.difficulties,
-            [this](std::vector<std::string> const& values) {
-                this->m_working.difficulties = values;
-                this->refresh();
-            }
-        )) popup->show();
-    }
-
-    void typePrev(CCObject*) { cycleValue(m_working.levelType, LEVEL_TYPES, -1); refresh(); }
-    void typeNext(CCObject*) { cycleValue(m_working.levelType, LEVEL_TYPES, 1); refresh(); }
-    void statusPrev(CCObject*) { cycleValue(m_working.status, STATUSES, -1); refresh(); }
-    void statusNext(CCObject*) { cycleValue(m_working.status, STATUSES, 1); refresh(); }
-    void sendPrev(CCObject*) {
-        if (m_working.status == "unchecked" || m_working.status == "rejected") { m_working.minSend = "any"; refresh(); return; }
-        cycleValue(m_working.minSend, MIN_SENDS, -1); refresh();
-    }
-    void sendNext(CCObject*) {
-        if (m_working.status == "unchecked" || m_working.status == "rejected") { m_working.minSend = "any"; refresh(); return; }
-        cycleValue(m_working.minSend, MIN_SENDS, 1); refresh();
-    }
-    void ratedPrev(CCObject*) { cycleValue(m_working.rated, RATED, -1); refresh(); }
-    void ratedNext(CCObject*) { cycleValue(m_working.rated, RATED, 1); refresh(); }
-    void videoPrev(CCObject*) { cycleValue(m_working.video, VIDEOS, -1); refresh(); }
-    void videoNext(CCObject*) { cycleValue(m_working.video, VIDEOS, 1); refresh(); }
-    void feedbackPrev(CCObject*) { cycleValue(m_working.feedbackNeeded, FEEDBACK_NEEDED, -1); refresh(); }
-    void feedbackNext(CCObject*) { cycleValue(m_working.feedbackNeeded, FEEDBACK_NEEDED, 1); refresh(); }
-    void sortPrev(CCObject*) { cycleValue(m_working.sort, SORTS, -1); refresh(); }
-    void sortNext(CCObject*) { cycleValue(m_working.sort, SORTS, 1); refresh(); }
-
-    void onReset(CCObject*) {
-        m_working = RequestFilters{};
-        if (!m_staff) m_working.status = "all";
-        refresh();
-    }
-
-    void onApply(CCObject*) {
-        g_filters = m_working;
-        onClose(nullptr);
-        showAlert(MOD_NAME, "Filters saved. Tap Refresh in Server Requests to apply them.");
-    }
-
-public:
-    static RequestFiltersPopup* create() {
-        auto* ret = new RequestFiltersPopup();
-        if (ret && ret->initFor()) {
-            ret->autorelease();
-            return ret;
-        }
-        delete ret;
-        return nullptr;
-    }
+    void onDifficultyPicker(CCObject*){if(auto* p=DifficultyPickerPopup::create(m_working.difficulties,[this](auto const&v){m_working.difficulties=v;refresh();}))p->show();}
+    void onSendTypePicker(CCObject*){if(auto*p=SendTypePickerPopup::create(m_working.sendTypes,m_working.sendSources,[this](auto const&t,auto const&s){m_working.sendTypes=t;m_working.sendSources=s;refresh();}))p->show();}
+    void typePrev(CCObject*){cycleValue(m_working.levelType,LEVEL_TYPES,-1);refresh();} void typeNext(CCObject*){cycleValue(m_working.levelType,LEVEL_TYPES,1);refresh();}
+    void statusPrev(CCObject*){cycleValue(m_working.status,STATUSES,-1);refresh();} void statusNext(CCObject*){cycleValue(m_working.status,STATUSES,1);refresh();}
+    void ratedPrev(CCObject*){cycleValue(m_working.rated,RATED,-1);refresh();} void ratedNext(CCObject*){cycleValue(m_working.rated,RATED,1);refresh();}
+    void videoPrev(CCObject*){cycleValue(m_working.video,VIDEOS,-1);refresh();} void videoNext(CCObject*){cycleValue(m_working.video,VIDEOS,1);refresh();}
+    void feedbackPrev(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,-1);refresh();} void feedbackNext(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,1);refresh();}
+    void sortPrev(CCObject*){cycleValue(m_working.sort,SORTS,-1);refresh();} void sortNext(CCObject*){cycleValue(m_working.sort,SORTS,1);refresh();}
+    void onReset(CCObject*){m_working=RequestFilters{};if(!m_staff)m_working.status="all";refresh();}
+    void onApply(CCObject*){g_filters=m_working;onClose(nullptr);showAlert(MOD_NAME,"Filters saved. Tap Refresh in Server Requests to apply them.");}
+public: static RequestFiltersPopup* create(){auto*ret=new RequestFiltersPopup();if(ret&&ret->initFor()){ret->autorelease();return ret;}delete ret;return nullptr;}
 };
 
 static void hideSubmitLoading();
@@ -2930,7 +2899,6 @@ protected:
     void applyLoadedState() {
         auto foundCount = static_cast<int>(requestLevelIDs().size());
         bool definitelyCapped = g_client.total > g_client.returned && g_client.returned > 0;
-        bool likelyHundredCap = g_client.returned >= 100 && g_client.total <= g_client.returned;
 
         auto meta = "CONNECTED  |  " + modeLabel() + "  |  " + std::to_string(foundCount) + " SHOWN";
         setStatus(meta);
@@ -2938,8 +2906,6 @@ protected:
             std::string info;
             if (definitelyCapped) {
                 info = "SERVER LIMIT: " + std::to_string(g_client.returned) + " / " + std::to_string(g_client.total) + " MATCHES RETURNED";
-            } else if (likelyHundredCap) {
-                info = "ONLY 100 LOADED - SERVER MAY BE CAPPING THE RESPONSE";
             } else {
                 info = "SERVER " + shortID(g_client.serverID) + "  -  USER " + shortID(g_client.userID);
             }
@@ -2948,8 +2914,8 @@ protected:
         refreshButtons();
 
         if (g_requestList.empty()) {
-            if (g_filters.status == "unchecked") {
-                setStatus("0 shown for NOT CHECKED - server filter returned no rows");
+            if (g_filters.status == "my_unchecked") {
+                setStatus("0 shown for this status - server filter returned no rows");
             } else {
                 setStatus("No requests match these filters");
             }
