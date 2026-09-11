@@ -1966,9 +1966,9 @@ static std::string prettyStatus(std::string const& v) {
 }
 static std::string prettyMinSend(std::string const& v) {
     if (v == "star_rate") return "Rate";
-    if (v == "featured") return "Featured+";
-    if (v == "epic") return "Epic+";
-    if (v == "legendary") return "Legendary+";
+    if (v == "featured") return "Feature";
+    if (v == "epic") return "Epic";
+    if (v == "legendary") return "Legendary";
     if (v == "mythic") return "Mythic";
     return "Any";
 }
@@ -2363,8 +2363,8 @@ protected:
         setTitle("SEND TYPE", "goldFont.fnt", .52f, 16.f);
 
         // Compact, centered 3x2 grid. Keep all six choices tightly grouped around the popup center.
-        constexpr float xs[] = {73.f, 135.f, 197.f};
-        constexpr float ys[] = {135.f, 85.f};
+        constexpr float xs[] = {63.f, 135.f, 207.f};
+        constexpr float ys[] = {130.f, 80.f};
         std::vector<std::string> types = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
         for (std::size_t i = 0; i < types.size(); ++i) {
             auto const& type = types[i];
