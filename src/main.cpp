@@ -1959,7 +1959,7 @@ static std::string prettyType(std::string const& v) {
 }
 static std::string prettyStatus(std::string const& v) {
     if (v == "my_unchecked") return "My unchecked";
-    if (v == "team_unchecked") return g_client.mode == "moderator" ? "Mods unchecked" : "Helpers unchecked";
+    if (v == "team_unchecked") return "Not checked";
     if (v == "sent") return "Sent";
     if (v == "rejected") return "Rejected";
     return "All";
@@ -2279,8 +2279,9 @@ static CCSprite* makeSendTypeIcon(std::string const& type) {
         if (!frame) return nullptr;
         auto* sprite = CCSprite::createWithSpriteFrame(frame);
         if (sprite) {
-            sprite->setScale(.72f);
+            sprite->setScale(.82f);
             sprite->setOpacity(255);
+            sprite->setColor(ccc3(255, 255, 255));
         }
         return sprite;
     }
@@ -2288,8 +2289,10 @@ static CCSprite* makeSendTypeIcon(std::string const& type) {
     if (sprite) {
         auto sz = sprite->getContentSize();
         if (sz.width > 0.f && sz.height > 0.f) {
-            float scale = 43.f / std::max(sz.width, sz.height);
+            float scale = 48.f / std::max(sz.width, sz.height);
             sprite->setScale(scale);
+            sprite->setOpacity(255);
+            sprite->setColor(ccc3(255, 255, 255));
         }
     }
     return sprite;
@@ -2319,9 +2322,11 @@ protected:
             if (!icon) continue;
             // Preserve a generous, identical hitbox while keeping the actual icon size
             // independent from the current texture quality.
+            icon->setOpacity(255);
+            icon->setColor(typeSelected(type) ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             button->setSprite(icon);
             button->setSizeMult(1.15f);
-            button->setOpacity(typeSelected(type) ? 255 : 165);
+            button->setOpacity(255);
         }
     }
 
@@ -2332,7 +2337,7 @@ protected:
         if (!toggle) return;
         toggle->setUserObject(CCString::create(key));
         toggle->setPosition(position);
-        toggle->setSizeMult(1.65f);
+        toggle->setSizeMult(1.85f);
         toggle->toggle(sourceSelected(key));
         m_buttonMenu->addChild(toggle, 4);
         m_sourceToggles.emplace_back(key, toggle);
@@ -2341,7 +2346,7 @@ protected:
         if (text) {
             text->setScale(.30f);
             text->setAnchorPoint({0.f, .5f});
-            text->setPosition({position.x + 16.f, position.y});
+            text->setPosition({position.x + 14.f, position.y});
             m_mainLayer->addChild(text, 4);
         }
     }
@@ -2354,11 +2359,11 @@ protected:
         m_types = selectedTypes;
         m_sources = selectedSources;
         m_onApply = std::move(onApply);
-        if (!Popup::init(430.f, 310.f)) return false;
+        if (!Popup::init(350.f, 250.f)) return false;
         setTitle("SEND TYPE", "goldFont.fnt", .60f, 18.f);
 
-        constexpr float xs[] = {72.f, 215.f, 358.f};
-        constexpr float ys[] = {220.f, 130.f};
+        constexpr float xs[] = {65.f, 175.f, 285.f};
+        constexpr float ys[] = {168.f, 96.f};
         std::vector<std::string> types = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
         for (std::size_t i = 0; i < types.size(); ++i) {
             auto const& type = types[i];
@@ -2374,13 +2379,13 @@ protected:
 
         // The source selectors are deliberately independent CCMenuItemTogglers. No callback
         // changes another toggle, so Helpers + Mods + Me can all remain checked together.
-        addSource("helpers", "HELPERS", {38.f, 46.f});
-        addSource("moderators", "MODS", {166.f, 46.f});
-        addSource("me", "ME", {294.f, 46.f});
+        addSource("helpers", "HELPERS", {38.f, 31.f});
+        addSource("moderators", "MODS", {128.f, 31.f});
+        addSource("me", "ME", {205.f, 31.f});
 
-        auto* applySpr = ButtonSprite::create("APPLY", 104, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .56f);
+        auto* applySpr = ButtonSprite::create("APPLY", 88, true, "bigFont.fnt", "GJ_button_01.png", 30.f, .52f);
         auto* applyBtn = CCMenuItemSpriteExtra::create(applySpr, this, menu_selector(SendTypePickerPopup::onApply));
-        applyBtn->setPosition({374.f, 46.f});
+        applyBtn->setPosition({292.f, 31.f});
         applyBtn->setSizeMult(1.f);
         m_buttonMenu->addChild(applyBtn, 4);
 
