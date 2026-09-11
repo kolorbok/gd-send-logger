@@ -1965,7 +1965,7 @@ static std::string prettyStatus(std::string const& v) {
     return "All";
 }
 static std::string prettyMinSend(std::string const& v) {
-    if (v == "star_rate") return "Rate+";
+    if (v == "star_rate") return "Rate";
     if (v == "featured") return "Featured+";
     if (v == "epic") return "Epic+";
     if (v == "legendary") return "Legendary+";
@@ -2153,7 +2153,7 @@ protected:
     ) {
         m_selected = selectedValues;
         m_onApply = std::move(onApply);
-        if (!Popup::init(310.f, 220.f)) return false;
+        if (!Popup::init(350.f, 250.f)) return false;
         setTitle("SELECT DIFFICULTIES", "goldFont.fnt", .58f, 20.f);
 
         // Keep the standard GD popup background visible. The choices themselves are
@@ -2363,8 +2363,8 @@ protected:
         setTitle("SEND TYPE", "goldFont.fnt", .52f, 16.f);
 
         // Compact, centered 3x2 grid. Keep all six choices tightly grouped around the popup center.
-        constexpr float xs[] = {80.f, 135.f, 190.f};
-        constexpr float ys[] = {125.f, 75.f};
+        constexpr float xs[] = {73.f, 135.f, 197.f};
+        constexpr float ys[] = {135.f, 85.f};
         std::vector<std::string> types = {"all", "star_rate", "featured", "epic", "legendary", "mythic"};
         for (std::size_t i = 0; i < types.size(); ++i) {
             auto const& type = types[i];
