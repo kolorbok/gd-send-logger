@@ -3238,10 +3238,12 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
         }
         if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
 
-        // Use a vanilla Geometry Dash sprite frame for the Requests button.
-        auto* sprite = CCSprite::createWithSpriteFrameName("GJ_starBtn_001.png");
+        // The Requests entry uses the original Kolorbot request icon, not the
+        // vanilla Already Rated star.
+        auto iconPath = (Mod::get()->getResourcesDir() / "request-star.png").string();
+        auto* sprite = CCSprite::create(iconPath.c_str());
         if (!sprite) {
-            log::error("[REQUESTS UI] Could not find vanilla Requests icon frame GJ_starBtn_001.png");
+            log::error("[REQUESTS UI] Could not load request-star.png");
             return;
         }
         // Do not use a fixed scale here. A PNG loaded directly from the mod resources has a
@@ -3708,7 +3710,7 @@ protected:
     }
 
     static std::string actorTypeLabel(std::string type, bool platformer) {
-        if (type == "undefined") return "Send";
+        if (type == "undefined") return "Sent";
         if (type == "star_rate") return platformer ? "Moon Rate" : "Star Rate";
         if (type == "featured") return "Featured";
         if (type == "epic") return "Epic";
@@ -3723,7 +3725,9 @@ protected:
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
         // All actor/rejection icons are native Geometry Dash sprites.
-        constexpr float targetVisualHeight = 20.f;
+        // Normalize every icon from its actual frame dimensions so small
+        // frames are not rendered tiny compared with the others.
+        constexpr float targetVisualSize = 22.f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
@@ -3733,7 +3737,10 @@ protected:
             }
         } else if (actor.status == "rejected") {
             const char* frameName = nullptr;
-            if (actor.type == "already_rated") frameName = "GJ_starBtn_001.png";
+            if (actor.type == "rejected") {
+                auto path = (Mod::get()->getResourcesDir() / "request-rejected.png").string();
+                sprite = CCSprite::create(path.c_str());
+            } else if (actor.type == "already_rated") frameName = "GJ_starBtn_001.png";
             else if (actor.type == "already_seen") frameName = "GJ_updateBtn_001.png";
             else if (actor.type == "wrong_id") frameName = "GJ_deleteServerBtn_001.png";
             else if (actor.type == "report") frameName = "GJ_reportBtn_001.png";
@@ -3745,10 +3752,9 @@ protected:
         }
         if (!sprite) return nullptr;
 
-        float scale = targetVisualHeight / 128.f;
-        if (actor.status == "sent" && actor.type == "star_rate") scale = targetVisualHeight / 92.f;
-        else if (actor.status == "sent" && actor.type == "featured") scale = targetVisualHeight / 123.f;
-        else if (actor.status == "sent" && actor.type == "mythic") scale = targetVisualHeight / 127.f;
+        auto size = sprite->getContentSize();
+        auto maxDim = std::max(size.width, size.height);
+        float scale = maxDim > 0.f ? targetVisualSize / maxDim : 1.f;
         sprite->setScale(scale);
         sprite->setAnchorPoint({0.5f, 0.5f});
         return sprite;
@@ -3816,22 +3822,38 @@ protected:
             }
         }
 
+        // Keep every member of a grouped result at exactly the same scale.
+        // If the complete comma-separated list does not fit, scale the whole
+        // group uniformly rather than shrinking only the later names.
+        constexpr float textSize = 9.5f;
+        float totalWidth = 0.f;
+        std::vector<float> widths;
+        widths.reserve(group.actors.size());
+        for (std::size_t i = 0; i < group.actors.size(); ++i) {
+            auto text = group.actors[i].tag;
+            if (i + 1 < group.actors.size()) text += ",";
+            auto* measure = CCLabelTTF::create(text.c_str(), "Arial", textSize);
+            auto width = measure ? measure->getContentSize().width : 0.f;
+            widths.push_back(width);
+            totalWidth += width;
+            if (i + 1 < group.actors.size()) totalWidth += 3.f;
+        }
+
+        auto available = std::max(1.f, SCROLL_W - x - 8.f);
+        float uniformScale = totalWidth > available ? available / totalWidth : 1.f;
+        float currentX = x;
         for (std::size_t i = 0; i < group.actors.size(); ++i) {
             auto const& actor = group.actors[i];
             auto tagText = actor.tag;
             if (i + 1 < group.actors.size()) tagText += ",";
 
-            auto* tagLabel = CCLabelTTF::create(tagText.c_str(), "Arial", 9.5f);
+            auto* tagLabel = CCLabelTTF::create(tagText.c_str(), "Arial", textSize);
             if (!tagLabel) continue;
+            tagLabel->setScale(uniformScale);
             tagLabel->setAnchorPoint({0.f, 0.5f});
             tagLabel->setColor(actor.url.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
 
-            auto available = SCROLL_W - x - 8.f;
-            if (tagLabel->getContentSize().width > available && available > 8.f) {
-                tagLabel->setScale(available / tagLabel->getContentSize().width);
-            }
-            auto width = tagLabel->getContentSize().width * tagLabel->getScaleX();
-
+            auto width = widths[i] * uniformScale;
             if (!actor.url.empty() && linkMenu) {
                 tagLabel->setAnchorPoint({0.5f, 0.5f});
                 auto* button = CCMenuItemSpriteExtra::create(tagLabel, this, menu_selector(RequestInfoPopup::onActorLink));
@@ -3840,17 +3862,17 @@ protected:
                     button->setSizeMult(1.f);
                     button->setTag(static_cast<int>(m_actorLinks.size()));
                     m_actorLinks.push_back(actor.url);
-                    button->setPosition({x + width * .5f, y - 9.f});
+                    button->setPosition({currentX + width * .5f, y - 9.f});
                     linkMenu->addChild(button, 5);
                 }
             } else {
-                tagLabel->setPosition({x, y - 9.f});
+                tagLabel->setPosition({currentX, y - 9.f});
                 parent->addChild(tagLabel, 2);
             }
-            x += width + 3.f;
-            if (x >= SCROLL_W - 8.f) break;
+            currentX += width + 3.f;
         }
     }
+
 
     void addActorSection(CCNode* parent, CCMenu* linkMenu, std::string const& title, std::vector<RequestActor> const& actors, float& y) {
         if (actors.empty()) return;
@@ -4066,7 +4088,7 @@ protected:
         if (!meta.requesterTag.empty()) {
             auto* label = CCLabelBMFont::create("REQUESTED BY", "goldFont.fnt");
             if (label) {
-                label->setScale(.34f);
+                label->setScale(.36f);
                 label->setAnchorPoint({0.f, 0.5f});
                 label->setPosition({SCROLL_X + 8.f, 18.f});
                 m_mainLayer->addChild(label, 3);
@@ -4074,7 +4096,7 @@ protected:
 
             auto* tag = CCLabelBMFont::create(meta.requesterTag.c_str(), "goldFont.fnt");
             if (tag) {
-                tag->setScale(.42f);
+                tag->setScale(.44f);
                 tag->setAnchorPoint({0.f, 0.5f});
                 tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(255, 215, 90));
                 auto x = SCROLL_X + 78.f;
