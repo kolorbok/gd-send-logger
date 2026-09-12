@@ -8,7 +8,6 @@
 #include <Geode/modify/LevelCell.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
-#include <Geode/binding/GJAccountManager.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
@@ -188,6 +187,13 @@ struct RequestFilters {
     std::string sort = "newest";
 };
 
+struct RequestActor {
+    std::string status;
+    std::string type;
+    std::string tag;
+    std::string url;
+};
+
 struct RequestMeta {
     int requestID = 0;
     int levelID = 0;
@@ -202,6 +208,11 @@ struct RequestMeta {
     std::string reviewMode;
     bool hasPlatformer = false;
     bool platformer = false;
+    std::string requesterTag;
+    std::string requesterURL;
+    std::vector<RequestActor> helpers;
+    std::vector<RequestActor> moderators;
+    std::vector<RequestActor> sentTo;
 };
 
 struct ClientState {
@@ -293,6 +304,45 @@ static std::string unescapeRequestField(std::string const& value) {
             out.push_back('\\');
             out.push_back(escaped);
         }
+    }
+    return out;
+}
+
+static std::vector<std::string> splitEscapedList(std::string const& value, char delimiter) {
+    std::vector<std::string> out;
+    std::string current;
+    current.reserve(value.size());
+    bool escaped = false;
+    for (char c : value) {
+        if (escaped) {
+            current.push_back(c);
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == delimiter) {
+            out.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(c);
+        }
+    }
+    if (escaped) current.push_back('\\');
+    if (!current.empty() || !value.empty()) out.push_back(current);
+    return out;
+}
+
+static std::vector<RequestActor> parseRequestActors(std::string value) {
+    std::vector<RequestActor> out;
+    for (auto const& rawEntry : splitEscapedList(value, ';')) {
+        auto fields = splitEscapedList(rawEntry, '|');
+        if (fields.size() < 4) continue;
+        RequestActor actor;
+        actor.status = trim(fields[0]);
+        actor.type = trim(fields[1]);
+        actor.tag = trim(fields[2]);
+        actor.url = trim(fields[3]);
+        if (actor.tag.empty()) continue;
+        out.push_back(std::move(actor));
     }
     return out;
 }
@@ -476,92 +526,6 @@ static std::string connectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("connection-key"));
 }
 
-static std::string requestServerErrorText(std::string const& text, int code) {
-    if (text.find("invalid_connection_key") != std::string::npos)
-        return "The connection key is invalid. Check the GD Requests mod settings.";
-    if (text.find("discord_server_not_available") != std::string::npos)
-        return "The Discord server for this request is unavailable.";
-    if (text.find("discord_member_not_found") != std::string::npos)
-        return "Your Discord account could not be found on the configured server.";
-    if (text.find("discord_moderator_not_found") != std::string::npos)
-        return "The configured Discord moderator could not be found.";
-    if (text.find("gd_account_not_linked") != std::string::npos)
-        return "Link your Geometry Dash account to the Discord bot with /link-gd before viewing requests.";
-    if (text.find("gd_account_identity_unavailable") != std::string::npos)
-        return "Geometry Dash account information is unavailable. Please log in to your GD account and try again.";
-    if (text.find("gd_account_mismatch") != std::string::npos ||
-        text.find("does not match the account linked") != std::string::npos)
-        return "The Geometry Dash account currently logged in does not match the account linked to your Discord account.";
-    if (text.find("request_access_denied") != std::string::npos)
-        return "You do not have access to this request.";
-    if (text.find("request_mode_denied") != std::string::npos)
-        return "You do not have permission to use this request mode.";
-    if (text.find("event_request_not_allowed") != std::string::npos)
-        return "You cannot submit this request for the current event.";
-    if (text.find("moderator_access_denied") != std::string::npos)
-        return "You do not have moderator access for this request.";
-    if (text.find("helper_access_denied") != std::string::npos)
-        return "You do not have helper access for this request.";
-    if (text.find("invalid_mode") != std::string::npos)
-        return "The selected request mode is invalid.";
-    if (text.find("invalid_request_id") != std::string::npos)
-        return "The request ID is invalid.";
-    if (text.find("invalid_level_id") != std::string::npos)
-        return "The level ID is invalid.";
-    if (text.find("invalid_stars") != std::string::npos)
-        return "The star rating is invalid.";
-    if (text.find("invalid_json") != std::string::npos || text.find("invalid_payload") != std::string::npos)
-        return "The server received an invalid request payload.";
-    if (text.find("send_channel_not_configured") != std::string::npos)
-        return "The Discord send channel is not configured.";
-    if (text.find("moderator_access_revoked") != std::string::npos)
-        return "Your moderator access has been revoked.";
-    if (text.find("discord_publish_failed") != std::string::npos || text.find("discord_publish_rejected") != std::string::npos)
-        return "Discord rejected the message publication.";
-    if (text.find("request_result_failed") != std::string::npos)
-        return "The request result could not be submitted.";
-    if (text.find("request_not_found") != std::string::npos)
-        return "The requested map request was not found.";
-    if (text.find("request_server_mismatch") != std::string::npos)
-        return "This request belongs to a different Discord server.";
-    if (text.find("request_event_mismatch") != std::string::npos)
-        return "This request belongs to a different event.";
-    if (text.find("moderator_role_missing_for_event") != std::string::npos)
-        return "The moderator role required for this event is missing.";
-    if (text.find("helper_role_missing_for_event") != std::string::npos)
-        return "The helper role required for this event is missing.";
-    if (text.find("mod_send_channel_not_configured") != std::string::npos)
-        return "The moderator send channel is not configured.";
-    if (text.find("helper_send_channel_not_configured") != std::string::npos)
-        return "The helper send channel is not configured.";
-    if (text.find("mod_send_channel_not_available") != std::string::npos ||
-        text.find("helper_send_channel_not_available") != std::string::npos ||
-        text.find("mod_send_reject_channel_not_available") != std::string::npos ||
-        text.find("helper_send_reject_channel_not_available") != std::string::npos)
-        return "The configured Discord channel is not available.";
-    if (text.find("mod_send_publish_failed") != std::string::npos ||
-        text.find("helper_send_publish_failed") != std::string::npos ||
-        text.find("mod_send_reject_publish_failed") != std::string::npos ||
-        text.find("helper_send_reject_publish_failed") != std::string::npos)
-        return "Discord rejected the request publication.";
-    if (text.find("invalid_action") != std::string::npos)
-        return "The selected action is invalid.";
-    if (text.find("unsupported_send_mode") != std::string::npos)
-        return "This send mode is not supported.";
-    return text.empty() ? ("HTTP " + std::to_string(code)) : text;
-}
-
-static std::string currentGDAccountID() {
-    auto* account = GJAccountManager::sharedState();
-    if (!account || account->m_accountID <= 0) return {};
-    return std::to_string(account->m_accountID);
-}
-
-static void addGDIdentityHeaders(web::WebRequest& req) {
-    auto accountID = currentGDAccountID();
-    if (!accountID.empty()) req.header("X-GD-Account-ID", accountID);
-}
-
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
     if (value.size() <= limit) return value;
     value.resize(limit);
@@ -727,7 +691,6 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
-    addGDIdentityHeaders(req);
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
@@ -896,6 +859,11 @@ static bool parseRequestsResponse(std::string const& text) {
                 meta.hasPlatformer = true;
                 meta.platformer = parseInt(parts[12]) != 0;
             }
+            if (parts.size() >= 14) meta.requesterTag = unescapeRequestField(parts[13]);
+            if (parts.size() >= 15) meta.requesterURL = unescapeRequestField(parts[14]);
+            if (parts.size() >= 16) meta.helpers = parseRequestActors(unescapeRequestField(parts[15]));
+            if (parts.size() >= 17) meta.moderators = parseRequestActors(unescapeRequestField(parts[16]));
+            if (parts.size() >= 18) meta.sentTo = parseRequestActors(unescapeRequestField(parts[17]));
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -2105,11 +2073,11 @@ static char const* difficultyFrameFor(std::string const& key) {
     if (key == "4" || key == "5") return "difficulty_03_btn_001.png";
     if (key == "6" || key == "7") return "difficulty_04_btn_001.png";
     if (key == "8" || key == "9") return "difficulty_05_btn_001.png";
-    if (key == "demon-easy") return "difficulty_07_btn_001.png";
-    if (key == "demon-medium") return "difficulty_08_btn_001.png";
-    if (key == "demon-hard") return "difficulty_06_btn_001.png";
-    if (key == "demon-insane") return "difficulty_09_btn_001.png";
-    if (key == "demon-extreme") return "difficulty_10_btn_001.png";
+    if (key == "demon-easy") return "difficulty_07_btn2_001.png";
+    if (key == "demon-medium") return "difficulty_08_btn2_001.png";
+    if (key == "demon-hard") return "difficulty_06_btn2_001.png";
+    if (key == "demon-insane") return "difficulty_09_btn2_001.png";
+    if (key == "demon-extreme") return "difficulty_10_btn2_001.png";
     return "difficulty_00_btn_001.png";
 }
 
@@ -2782,7 +2750,6 @@ static void postRequestAction(
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
-    addGDIdentityHeaders(req);
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
@@ -2810,8 +2777,8 @@ static void postRequestAction(
             } else {
                 if (g_submitRequestState != state) return;
                 hideSubmitLoading();
-                showAlert(MOD_NAME, "Could not submit the request result.\n\n" +
-                    requestServerErrorText(text, res.code()));
+                showAlert(MOD_NAME, "Could not submit the request result.\n\nHTTP " + std::to_string(res.code()) + "\n" +
+                    (text.empty() ? "Empty response" : text));
             }
         });
     });
@@ -3118,7 +3085,6 @@ protected:
 
         auto req = web::WebRequest();
         req.header("Authorization", "Bearer " + key);
-        addGDIdentityHeaders(req);
         req.timeout(std::chrono::seconds(30));
         auto url = requestURL();
 
@@ -3136,7 +3102,7 @@ protected:
                 self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
                 if (self->m_metaLabel) {
                     self->m_metaLabel->setString(
-                        limitPopupText(requestServerErrorText(text, res.code()), 120).c_str()
+                        limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
                     );
                 }
                 self->refreshButtons();
@@ -3267,13 +3233,10 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
         }
         if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
 
-        // Load the Requests icon directly from this mod's extracted resources directory.
-        // This deliberately avoids the sprite-frame cache: if a custom frame is not registered,
-        // Geode displays its magenta/black missing-texture fallback instead of our PNG.
-        auto iconPath = (Mod::get()->getResourcesDir() / "request-star.png").string();
-        auto* sprite = CCSprite::create(iconPath.c_str());
+        // Use a vanilla Geometry Dash sprite frame for the Requests button.
+        auto* sprite = CCSprite::createWithSpriteFrameName("GJ_starBtn_001.png");
         if (!sprite) {
-            log::error("[REQUESTS UI] Could not load custom Requests icon from {}", iconPath);
+            log::error("[REQUESTS UI] Could not find vanilla Requests icon frame GJ_starBtn_001.png");
             return;
         }
         // Do not use a fixed scale here. A PNG loaded directly from the mod resources has a
@@ -3714,6 +3677,205 @@ protected:
         parent->addChild(valueLabel, 2);
     }
 
+    std::vector<std::string> m_actorLinks;
+
+    void onActorLink(CCObject* sender) {
+        auto* item = static_cast<CCMenuItemSpriteExtra*>(sender);
+        if (!item) return;
+        auto index = item->getTag();
+        if (index < 0 || static_cast<std::size_t>(index) >= m_actorLinks.size()) return;
+        auto const& url = m_actorLinks[index];
+        if (isValidWebURL(url)) geode::utils::web::openLinkInBrowser(url);
+    }
+
+    static std::string actorTypeLabel(std::string type, bool platformer) {
+        if (type == "undefined") return "Send";
+        if (type == "star_rate") return platformer ? "Moon Rate" : "Star Rate";
+        if (type == "featured") return "Featured";
+        if (type == "epic") return "Epic";
+        if (type == "legendary") return "Legendary";
+        if (type == "mythic") return "Mythic";
+        if (type == "already_rated") return "Already Rated";
+        if (type == "already_seen") return "Already Seen";
+        if (type == "wrong_id") return "Wrong ID";
+        if (type == "report") return "Report";
+        return type.empty() ? "" : type;
+    }
+
+    static CCSprite* makeActorIcon(RequestActor const& actor) {
+        constexpr float targetVisualHeight = 28.f;
+        CCSprite* sprite = nullptr;
+        if (actor.status == "sent") {
+            if (actor.type == "undefined") {
+                // Undefined/ordinary Send is represented by the vanilla moderator icon.
+                sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
+            } else {
+                sprite = makeEmbeddedSendIcon(actor.type);
+            }
+        } else if (actor.status == "rejected") {
+            const char* frameName = nullptr;
+            if (actor.type == "already_rated") frameName = "GJ_starBtn_001.png";
+            else if (actor.type == "already_seen") frameName = "GJ_updateBtn_001.png";
+            else if (actor.type == "wrong_id") frameName = "GJ_deleteServerBtn_001.png";
+            else if (actor.type == "report") frameName = "GJ_reportBtn_001.png";
+            if (frameName) sprite = CCSprite::createWithSpriteFrameName(frameName);
+        } else if (actor.status == "sent_to") {
+            sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
+        }
+        if (!sprite) return nullptr;
+
+        // The first supplied Star Rate image (rate_2) is the visual size reference.
+        // Most supplied 128x128 assets are edge-to-edge; the existing rate_3 asset has
+        // transparent padding, so it receives its own scale to reach the same visible height.
+        float scale = targetVisualHeight / 128.f;
+        if (actor.status == "sent" && actor.type == "star_rate") {
+            scale = targetVisualHeight / 92.f;
+        } else if (actor.status == "sent" && actor.type == "featured") {
+            scale = targetVisualHeight / 123.f;
+        } else if (actor.status == "sent" && actor.type == "mythic") {
+            scale = targetVisualHeight / 127.f;
+        }
+        sprite->setScale(scale);
+        sprite->setAnchorPoint({0.5f, 0.5f});
+        return sprite;
+    }
+
+    static float actorRowHeight() { return 29.f; }
+
+    static float actorSectionHeight(std::vector<RequestActor> const& actors) {
+        if (actors.empty()) return 0.f;
+        std::size_t sentCount = 0;
+        std::size_t rejectedCount = 0;
+        for (auto const& actor : actors) {
+            if (actor.status == "sent") ++sentCount;
+            else if (actor.status == "rejected") ++rejectedCount;
+        }
+        float height = 19.f; // section heading
+        if (sentCount) height += 17.f + static_cast<float>(sentCount) * actorRowHeight();
+        if (rejectedCount) height += 17.f + static_cast<float>(rejectedCount) * actorRowHeight();
+        return height;
+    }
+
+    static float sentToSectionHeight(std::vector<RequestActor> const& actors) {
+        return actors.empty() ? 0.f : 19.f + static_cast<float>(actors.size()) * actorRowHeight();
+    }
+
+    void addActorRow(CCNode* parent, CCMenu* linkMenu, RequestActor const& actor, float y) {
+        if (!parent || actor.tag.empty()) return;
+        auto* icon = makeActorIcon(actor);
+        if (icon) {
+            icon->setPosition({23.f, y - 12.f});
+            parent->addChild(icon, 3);
+        }
+
+        std::string prefix;
+        if (actor.status == "sent") prefix = actorTypeLabel(actor.type, m_meta.platformer) + "  ";
+        else if (actor.status == "rejected") prefix = actorTypeLabel(actor.type, m_meta.platformer) + "  ";
+        float x = 43.f;
+        if (!prefix.empty()) {
+            auto* typeLabel = CCLabelTTF::create(prefix.c_str(), "Arial", 9.5f);
+            if (typeLabel) {
+                typeLabel->setAnchorPoint({0.f, 0.5f});
+                typeLabel->setColor(ccc3(190, 190, 190));
+                typeLabel->setPosition({x, y - 12.f});
+                parent->addChild(typeLabel, 2);
+                x += typeLabel->getContentSize().width + 2.f;
+            }
+        }
+
+        auto* tagLabel = CCLabelTTF::create(actor.tag.c_str(), "Arial", 10.5f);
+        if (!tagLabel) return;
+        tagLabel->setAnchorPoint({0.f, 0.5f});
+        tagLabel->setColor(actor.url.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
+        auto available = SCROLL_W - x - 10.f;
+        if (tagLabel->getContentSize().width > available && available > 10.f) {
+            tagLabel->setScale(available / tagLabel->getContentSize().width);
+        }
+        auto width = tagLabel->getContentSize().width * tagLabel->getScaleX();
+        if (!actor.url.empty() && linkMenu) {
+            tagLabel->setAnchorPoint({0.5f, 0.5f});
+            auto* button = CCMenuItemSpriteExtra::create(tagLabel, this, menu_selector(RequestInfoPopup::onActorLink));
+            if (button) {
+                button->m_animationEnabled = false;
+                button->setSizeMult(1.f);
+                button->setTag(static_cast<int>(m_actorLinks.size()));
+                m_actorLinks.push_back(actor.url);
+                button->setPosition({x + width * .5f, y - 12.f});
+                linkMenu->addChild(button, 5);
+                return;
+            }
+        }
+        tagLabel->setPosition({x, y - 12.f});
+        parent->addChild(tagLabel, 2);
+    }
+
+    void addActorSection(CCNode* parent, CCMenu* linkMenu, std::string const& title, std::vector<RequestActor> const& actors, float& y) {
+        if (actors.empty()) return;
+        auto* heading = CCLabelBMFont::create(title.c_str(), "goldFont.fnt");
+        if (heading) {
+            heading->setScale(.38f);
+            heading->setAnchorPoint({0.f, 1.f});
+            heading->setPosition({10.f, y});
+            parent->addChild(heading, 2);
+        }
+        y -= 19.f;
+
+        bool hasSent = false;
+        bool hasRejected = false;
+        for (auto const& actor : actors) {
+            if (actor.status == "sent") hasSent = true;
+            else if (actor.status == "rejected") hasRejected = true;
+        }
+        if (hasSent) {
+            auto* sub = CCLabelTTF::create("Sent", "Arial", 9.5f);
+            if (sub) {
+                sub->setAnchorPoint({0.f, 1.f});
+                sub->setColor(ccc3(170, 170, 170));
+                sub->setPosition({10.f, y});
+                parent->addChild(sub, 2);
+            }
+            y -= 17.f;
+            for (auto const& actor : actors) {
+                if (actor.status != "sent") continue;
+                addActorRow(parent, linkMenu, actor, y);
+                y -= actorRowHeight();
+            }
+        }
+        if (hasRejected) {
+            auto* sub = CCLabelTTF::create("Rejected", "Arial", 9.5f);
+            if (sub) {
+                sub->setAnchorPoint({0.f, 1.f});
+                sub->setColor(ccc3(170, 170, 170));
+                sub->setPosition({10.f, y});
+                parent->addChild(sub, 2);
+            }
+            y -= 17.f;
+            for (auto const& actor : actors) {
+                if (actor.status != "rejected") continue;
+                addActorRow(parent, linkMenu, actor, y);
+                y -= actorRowHeight();
+            }
+        }
+        y -= 5.f;
+    }
+
+    void addSentToSection(CCNode* parent, CCMenu* linkMenu, float& y) {
+        if (m_meta.sentTo.empty()) return;
+        auto* heading = CCLabelBMFont::create("SENT TO", "goldFont.fnt");
+        if (heading) {
+            heading->setScale(.38f);
+            heading->setAnchorPoint({0.f, 1.f});
+            heading->setPosition({10.f, y});
+            parent->addChild(heading, 2);
+        }
+        y -= 19.f;
+        for (auto const& actor : m_meta.sentTo) {
+            addActorRow(parent, linkMenu, actor, y);
+            y -= actorRowHeight();
+        }
+        y -= 5.f;
+    }
+
     // Keep request metadata rows on the same two-line heading/value layout.
     // The vertical spacing is calculated only from fields that actually exist,
     // so missing REVIEW/FEEDBACK fields never reserve empty space.
@@ -3759,7 +3921,10 @@ protected:
             required += 16.f;
             required += static_cast<float>(descriptionLines.size()) * TTF_LINE_STEP;
         }
-        if (infoLines.empty() && descriptionLines.empty()) required += 24.f;
+        if (!meta.helpers.empty()) required += 5.f + actorSectionHeight(meta.helpers);
+        if (!meta.moderators.empty()) required += 5.f + actorSectionHeight(meta.moderators);
+        if (!meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
+        if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty()) required += 24.f;
         required += 10.f;
         float contentH = std::max(SCROLL_H, required);
 
@@ -3796,6 +3961,12 @@ protected:
             y -= INFO_LINE_STEP;
         }
 
+        auto* linkMenu = CCMenu::create();
+        if (linkMenu) {
+            linkMenu->setPosition({0.f, 0.f});
+            scroll->m_contentLayer->addChild(linkMenu, 4);
+        }
+
         if (!descriptionLines.empty()) {
             // After the loop, y is already one full row below the last heading.
             // The last value is at (y + INFO_LINE_STEP - INFO_VALUE_OFFSET).
@@ -3811,12 +3982,6 @@ protected:
                 scroll->m_contentLayer->addChild(heading, 2);
             }
             y -= 16.f;
-
-            auto* linkMenu = CCMenu::create();
-            if (linkMenu) {
-                linkMenu->setPosition({0.f, 0.f});
-                scroll->m_contentLayer->addChild(linkMenu, 4);
-            }
 
             for (auto const& displayLine : descriptionLines) {
                 auto const& line = displayLine.text;
@@ -3875,16 +4040,67 @@ protected:
                 y -= TTF_LINE_STEP;
             }
         } else if (infoLines.empty()) {
-            auto* empty = CCLabelTTF::create("No additional request info.", "Arial", TTF_SIZE);
-            if (empty) {
-                empty->setAnchorPoint({0.f, 1.f});
-                empty->setColor(ccc3(255, 255, 255));
-                empty->setPosition({10.f, y});
-                scroll->m_contentLayer->addChild(empty, 2);
+            if (meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty()) {
+                auto* empty = CCLabelTTF::create("No additional request info.", "Arial", TTF_SIZE);
+                if (empty) {
+                    empty->setAnchorPoint({0.f, 1.f});
+                    empty->setColor(ccc3(255, 255, 255));
+                    empty->setPosition({10.f, y});
+                    scroll->m_contentLayer->addChild(empty, 2);
+                }
             }
         }
 
+        if (!descriptionLines.empty()) {
+            y -= 5.f;
+        }
+        addActorSection(scroll->m_contentLayer, linkMenu, "HELPERS", meta.helpers, y);
+        addActorSection(scroll->m_contentLayer, linkMenu, "MODERATORS", meta.moderators, y);
+        addSentToSection(scroll->m_contentLayer, linkMenu, y);
+
         scroll->scrollToTop();
+
+        if (!meta.requesterTag.empty()) {
+            auto* label = CCLabelTTF::create("REQUESTED BY", "Arial", 9.5f);
+            if (label) {
+                label->setAnchorPoint({0.f, 0.5f});
+                label->setColor(ccc3(170, 170, 170));
+                label->setPosition({SCROLL_X + 4.f, 19.f});
+                m_mainLayer->addChild(label, 3);
+
+                auto* tag = CCLabelTTF::create(meta.requesterTag.c_str(), "Arial", 10.5f);
+                if (tag) {
+                    tag->setAnchorPoint({0.f, 0.5f});
+                    tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
+                    auto x = SCROLL_X + 72.f;
+                    auto available = POPUP_W - x - 16.f;
+                    if (tag->getContentSize().width > available && available > 10.f) {
+                        tag->setScale(available / tag->getContentSize().width);
+                    }
+                    auto width = tag->getContentSize().width * tag->getScaleX();
+                    if (!meta.requesterURL.empty()) {
+                        tag->setAnchorPoint({0.5f, 0.5f});
+                        auto* menu = CCMenu::create();
+                        if (menu) {
+                            menu->setPosition({0.f, 0.f});
+                            m_mainLayer->addChild(menu, 4);
+                            auto* button = CCMenuItemSpriteExtra::create(tag, this, menu_selector(RequestInfoPopup::onActorLink));
+                            if (button) {
+                                button->m_animationEnabled = false;
+                                button->setSizeMult(1.f);
+                                button->setTag(static_cast<int>(m_actorLinks.size()));
+                                m_actorLinks.push_back(meta.requesterURL);
+                                button->setPosition({x + width * .5f, 19.f});
+                                menu->addChild(button, 5);
+                            }
+                        }
+                    } else {
+                        tag->setPosition({x, 19.f});
+                        m_mainLayer->addChild(tag, 3);
+                    }
+                }
+            }
+        }
 
         if (contentH > SCROLL_H + 1.f) {
             auto* hint = CCLabelBMFont::create("SCROLL", "goldFont.fnt");
