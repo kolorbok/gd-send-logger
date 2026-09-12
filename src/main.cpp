@@ -475,6 +475,13 @@ static std::string connectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("connection-key"));
 }
 
+static std::string requestServerErrorText(std::string const& text, int code) {
+    if (text.find("gd_account_not_linked") != std::string::npos) {
+        return "Link your Geometry Dash account to the Discord bot with /link-gd before viewing requests.";
+    }
+    return text.empty() ? ("HTTP " + std::to_string(code)) : text;
+}
+
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
     if (value.size() <= limit) return value;
     value.resize(limit);
@@ -2721,8 +2728,8 @@ static void postRequestAction(
             } else {
                 if (g_submitRequestState != state) return;
                 hideSubmitLoading();
-                showAlert(MOD_NAME, "Could not submit the request result.\n\nHTTP " + std::to_string(res.code()) + "\n" +
-                    (text.empty() ? "Empty response" : text));
+                showAlert(MOD_NAME, "Could not submit the request result.\n\n" +
+                    requestServerErrorText(text, res.code()));
             }
         });
     });
@@ -3043,25 +3050,11 @@ protected:
             }
 
             if (!res.ok()) {
-                if (text.find("ERR\tgd_account_not_linked") != std::string::npos) {
-                    self->setStatus("Geometry Dash account is not linked");
-                    if (self->m_metaLabel) {
-                        self->m_metaLabel->setString(
-                            "Link your GD account in Discord with /link-gd before viewing requests."
-                        );
-                    }
-                    showAlert(
-                        MOD_NAME,
-                        "You cannot view Server Requests until your Geometry Dash account is linked and verified with the Discord bot.\n\n"
-                        "Open Discord and use /link-gd to link your Geometry Dash account, then return here and press Refresh."
+                self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
+                if (self->m_metaLabel) {
+                    self->m_metaLabel->setString(
+                        limitPopupText(requestServerErrorText(text, res.code()), 120).c_str()
                     );
-                } else {
-                    self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
-                    if (self->m_metaLabel) {
-                        self->m_metaLabel->setString(
-                            limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
-                        );
-                    }
                 }
                 self->refreshButtons();
                 self->release();
