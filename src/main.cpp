@@ -7,6 +7,7 @@
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/LevelCell.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
+#include <Geode/binding/GJAccountManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
@@ -475,9 +476,37 @@ static std::string connectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("connection-key"));
 }
 
+static std::string currentGDAccountID() {
+    auto* account = GJAccountManager::sharedState();
+    if (!account) return {};
+    if (account->m_accountID <= 0) return {};
+    return std::to_string(account->m_accountID);
+}
+
+static std::string currentGDPlayerID() {
+    auto* account = GJAccountManager::sharedState();
+    if (!account) return {};
+    if (account->m_playerID <= 0) return {};
+    return std::to_string(account->m_playerID);
+}
+
+static void addGDIdentityHeaders(web::WebRequest& req) {
+    auto accountID = currentGDAccountID();
+    auto playerID = currentGDPlayerID();
+    if (!accountID.empty()) req.header("X-GD-Account-ID", accountID);
+    if (!playerID.empty()) req.header("X-GD-Player-ID", playerID);
+}
+
 static std::string requestServerErrorText(std::string const& text, int code) {
     if (text.find("gd_account_not_linked") != std::string::npos) {
         return "Link your Geometry Dash account to the Discord bot with /link-gd before viewing requests.";
+    }
+    if (text.find("gd_account_identity_unavailable") != std::string::npos) {
+        return "Geometry Dash account information is unavailable. Please log in to your GD account and try again.";
+    }
+    if (text.find("gd_account_mismatch") != std::string::npos ||
+        text.find("does not match the account linked") != std::string::npos) {
+        return "The Geometry Dash account currently logged in does not match the account linked to your Discord account.";
     }
     return text.empty() ? ("HTTP " + std::to_string(code)) : text;
 }
@@ -647,6 +676,7 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
+    addGDIdentityHeaders(req);
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
@@ -3036,6 +3066,7 @@ protected:
 
         auto req = web::WebRequest();
         req.header("Authorization", "Bearer " + key);
+        addGDIdentityHeaders(req);
         req.timeout(std::chrono::seconds(30));
         auto url = requestURL();
 
