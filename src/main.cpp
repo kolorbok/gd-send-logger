@@ -7,8 +7,8 @@
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/LevelCell.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
-#include <Geode/binding/GJAccountManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
+#include <Geode/binding/GJAccountManager.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
@@ -476,39 +476,90 @@ static std::string connectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("connection-key"));
 }
 
-static std::string currentGDAccountID() {
-    auto* account = GJAccountManager::sharedState();
-    if (!account) return {};
-    if (account->m_accountID <= 0) return {};
-    return std::to_string(account->m_accountID);
+static std::string requestServerErrorText(std::string const& text, int code) {
+    if (text.find("invalid_connection_key") != std::string::npos)
+        return "The connection key is invalid. Check the GD Requests mod settings.";
+    if (text.find("discord_server_not_available") != std::string::npos)
+        return "The Discord server for this request is unavailable.";
+    if (text.find("discord_member_not_found") != std::string::npos)
+        return "Your Discord account could not be found on the configured server.";
+    if (text.find("discord_moderator_not_found") != std::string::npos)
+        return "The configured Discord moderator could not be found.";
+    if (text.find("gd_account_not_linked") != std::string::npos)
+        return "Link your Geometry Dash account to the Discord bot with /link-gd before viewing requests.";
+    if (text.find("gd_account_identity_unavailable") != std::string::npos)
+        return "Geometry Dash account information is unavailable. Please log in to your GD account and try again.";
+    if (text.find("gd_account_mismatch") != std::string::npos ||
+        text.find("does not match the account linked") != std::string::npos)
+        return "The Geometry Dash account currently logged in does not match the account linked to your Discord account.";
+    if (text.find("request_access_denied") != std::string::npos)
+        return "You do not have access to this request.";
+    if (text.find("request_mode_denied") != std::string::npos)
+        return "You do not have permission to use this request mode.";
+    if (text.find("event_request_not_allowed") != std::string::npos)
+        return "You cannot submit this request for the current event.";
+    if (text.find("moderator_access_denied") != std::string::npos)
+        return "You do not have moderator access for this request.";
+    if (text.find("helper_access_denied") != std::string::npos)
+        return "You do not have helper access for this request.";
+    if (text.find("invalid_mode") != std::string::npos)
+        return "The selected request mode is invalid.";
+    if (text.find("invalid_request_id") != std::string::npos)
+        return "The request ID is invalid.";
+    if (text.find("invalid_level_id") != std::string::npos)
+        return "The level ID is invalid.";
+    if (text.find("invalid_stars") != std::string::npos)
+        return "The star rating is invalid.";
+    if (text.find("invalid_json") != std::string::npos || text.find("invalid_payload") != std::string::npos)
+        return "The server received an invalid request payload.";
+    if (text.find("send_channel_not_configured") != std::string::npos)
+        return "The Discord send channel is not configured.";
+    if (text.find("moderator_access_revoked") != std::string::npos)
+        return "Your moderator access has been revoked.";
+    if (text.find("discord_publish_failed") != std::string::npos || text.find("discord_publish_rejected") != std::string::npos)
+        return "Discord rejected the message publication.";
+    if (text.find("request_result_failed") != std::string::npos)
+        return "The request result could not be submitted.";
+    if (text.find("request_not_found") != std::string::npos)
+        return "The requested map request was not found.";
+    if (text.find("request_server_mismatch") != std::string::npos)
+        return "This request belongs to a different Discord server.";
+    if (text.find("request_event_mismatch") != std::string::npos)
+        return "This request belongs to a different event.";
+    if (text.find("moderator_role_missing_for_event") != std::string::npos)
+        return "The moderator role required for this event is missing.";
+    if (text.find("helper_role_missing_for_event") != std::string::npos)
+        return "The helper role required for this event is missing.";
+    if (text.find("mod_send_channel_not_configured") != std::string::npos)
+        return "The moderator send channel is not configured.";
+    if (text.find("helper_send_channel_not_configured") != std::string::npos)
+        return "The helper send channel is not configured.";
+    if (text.find("mod_send_channel_not_available") != std::string::npos ||
+        text.find("helper_send_channel_not_available") != std::string::npos ||
+        text.find("mod_send_reject_channel_not_available") != std::string::npos ||
+        text.find("helper_send_reject_channel_not_available") != std::string::npos)
+        return "The configured Discord channel is not available.";
+    if (text.find("mod_send_publish_failed") != std::string::npos ||
+        text.find("helper_send_publish_failed") != std::string::npos ||
+        text.find("mod_send_reject_publish_failed") != std::string::npos ||
+        text.find("helper_send_reject_publish_failed") != std::string::npos)
+        return "Discord rejected the request publication.";
+    if (text.find("invalid_action") != std::string::npos)
+        return "The selected action is invalid.";
+    if (text.find("unsupported_send_mode") != std::string::npos)
+        return "This send mode is not supported.";
+    return text.empty() ? ("HTTP " + std::to_string(code)) : text;
 }
 
-static std::string currentGDPlayerID() {
+static std::string currentGDAccountID() {
     auto* account = GJAccountManager::sharedState();
-    if (!account) return {};
-    if (account->m_playerID <= 0) return {};
-    return std::to_string(account->m_playerID);
+    if (!account || account->m_accountID <= 0) return {};
+    return std::to_string(account->m_accountID);
 }
 
 static void addGDIdentityHeaders(web::WebRequest& req) {
     auto accountID = currentGDAccountID();
-    auto playerID = currentGDPlayerID();
     if (!accountID.empty()) req.header("X-GD-Account-ID", accountID);
-    if (!playerID.empty()) req.header("X-GD-Player-ID", playerID);
-}
-
-static std::string requestServerErrorText(std::string const& text, int code) {
-    if (text.find("gd_account_not_linked") != std::string::npos) {
-        return "Link your Geometry Dash account to the Discord bot with /link-gd before viewing requests.";
-    }
-    if (text.find("gd_account_identity_unavailable") != std::string::npos) {
-        return "Geometry Dash account information is unavailable. Please log in to your GD account and try again.";
-    }
-    if (text.find("gd_account_mismatch") != std::string::npos ||
-        text.find("does not match the account linked") != std::string::npos) {
-        return "The Geometry Dash account currently logged in does not match the account linked to your Discord account.";
-    }
-    return text.empty() ? ("HTTP " + std::to_string(code)) : text;
 }
 
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
@@ -2731,6 +2782,7 @@ static void postRequestAction(
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
+    addGDIdentityHeaders(req);
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
