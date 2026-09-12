@@ -9,6 +9,7 @@
 #include <Geode/binding/GameLevelManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
+#include <Geode/binding/ProfilePage.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
 #include <Geode/ui/TextInput.hpp>
@@ -21,6 +22,7 @@
 #include <unordered_map>
 #include <atomic>
 #include <memory>
+#include <string_view>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/ScrollLayer.hpp>
 #include <Geode/binding/LoadingCircleSprite.hpp>
@@ -154,6 +156,7 @@ static std::string getTextFromClipboard() {
 #include <unordered_map>
 #include <atomic>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 using namespace geode::prelude;
@@ -212,6 +215,7 @@ struct RequestMeta {
     std::string requesterURL;
     std::vector<RequestActor> helpers;
     std::vector<RequestActor> moderators;
+    std::vector<RequestActor> reviewers;
     std::vector<RequestActor> sentTo;
 };
 
@@ -864,6 +868,7 @@ static bool parseRequestsResponse(std::string const& text) {
             if (parts.size() >= 16) meta.helpers = parseRequestActors(unescapeRequestField(parts[15]));
             if (parts.size() >= 17) meta.moderators = parseRequestActors(unescapeRequestField(parts[16]));
             if (parts.size() >= 18) meta.sentTo = parseRequestActors(unescapeRequestField(parts[17]));
+            if (parts.size() >= 19) meta.reviewers = parseRequestActors(unescapeRequestField(parts[18]));
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -2144,7 +2149,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected, bool 
             starsLabel->setAnchorPoint({1.f, .5f});
             // Restore the original Demon 10★ geometry; normal difficulties keep
             // their existing tested coordinates.
-            starsLabel->setPosition(isDemonDifficulty(key) ? CCPoint{35.0f, 18.4f} : CCPoint{31.4f, 18.4f});
+            starsLabel->setPosition(isDemonDifficulty(key) ? CCPoint{35.0f, 13.2f} : CCPoint{31.4f, 18.4f});
             starsLabel->setOpacity(255);
             starsLabel->setColor(selected ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             tile->addChild(starsLabel, 4);
@@ -2168,7 +2173,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected, bool 
                 }
             }
             star->setScale(iconScale);
-            star->setPosition(isDemonDifficulty(key) ? CCPoint{47.2f, 18.1f} : CCPoint{42.8f, 18.1f});
+            star->setPosition(isDemonDifficulty(key) ? CCPoint{47.2f, 12.9f} : CCPoint{42.8f, 18.1f});
             star->setOpacity(255);
             star->setColor(selected ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             tile->addChild(star, 4);
@@ -3684,8 +3689,22 @@ protected:
         if (!item) return;
         auto index = item->getTag();
         if (index < 0 || static_cast<std::size_t>(index) >= m_actorLinks.size()) return;
-        auto const& url = m_actorLinks[index];
-        if (isValidWebURL(url)) geode::utils::web::openLinkInBrowser(url);
+        auto const& target = m_actorLinks[index];
+
+        // Native Geometry Dash profile target. The bridge sends linked users as
+        // gdprofile://<account-id>, so no browser/GDBrowser is involved.
+        constexpr std::string_view prefix = "gdprofile://";
+        if (target.starts_with(prefix)) {
+            auto accountID = parseInt(std::string(target.substr(prefix.size())));
+            if (accountID > 0) {
+                if (auto* profile = ProfilePage::create(accountID, false)) {
+                    profile->show();
+                }
+            }
+            return;
+        }
+
+        if (isValidWebURL(target)) geode::utils::web::openLinkInBrowser(target);
     }
 
     static std::string actorTypeLabel(std::string type, bool platformer) {
@@ -3703,11 +3722,11 @@ protected:
     }
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
-        constexpr float targetVisualHeight = 28.f;
+        // All actor/rejection icons are native Geometry Dash sprites.
+        constexpr float targetVisualHeight = 20.f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
-                // Undefined/ordinary Send is represented by the vanilla moderator icon.
                 sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
             } else {
                 sprite = makeEmbeddedSendIcon(actor.type);
@@ -3721,96 +3740,123 @@ protected:
             if (frameName) sprite = CCSprite::createWithSpriteFrameName(frameName);
         } else if (actor.status == "sent_to") {
             sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
+        } else if (actor.status == "reviewer") {
+            sprite = nullptr;
         }
         if (!sprite) return nullptr;
 
-        // The first supplied Star Rate image (rate_2) is the visual size reference.
-        // Most supplied 128x128 assets are edge-to-edge; the existing rate_3 asset has
-        // transparent padding, so it receives its own scale to reach the same visible height.
         float scale = targetVisualHeight / 128.f;
-        if (actor.status == "sent" && actor.type == "star_rate") {
-            scale = targetVisualHeight / 92.f;
-        } else if (actor.status == "sent" && actor.type == "featured") {
-            scale = targetVisualHeight / 123.f;
-        } else if (actor.status == "sent" && actor.type == "mythic") {
-            scale = targetVisualHeight / 127.f;
-        }
+        if (actor.status == "sent" && actor.type == "star_rate") scale = targetVisualHeight / 92.f;
+        else if (actor.status == "sent" && actor.type == "featured") scale = targetVisualHeight / 123.f;
+        else if (actor.status == "sent" && actor.type == "mythic") scale = targetVisualHeight / 127.f;
         sprite->setScale(scale);
         sprite->setAnchorPoint({0.5f, 0.5f});
         return sprite;
     }
 
-    static float actorRowHeight() { return 29.f; }
+    struct ActorGroup {
+        std::string status;
+        std::string type;
+        std::vector<RequestActor> actors;
+    };
 
-    static float actorSectionHeight(std::vector<RequestActor> const& actors) {
-        if (actors.empty()) return 0.f;
-        std::size_t sentCount = 0;
-        std::size_t rejectedCount = 0;
-        for (auto const& actor : actors) {
-            if (actor.status == "sent") ++sentCount;
-            else if (actor.status == "rejected") ++rejectedCount;
-        }
-        float height = 19.f; // section heading
-        if (sentCount) height += 17.f + static_cast<float>(sentCount) * actorRowHeight();
-        if (rejectedCount) height += 17.f + static_cast<float>(rejectedCount) * actorRowHeight();
-        return height;
-    }
-
-    static float sentToSectionHeight(std::vector<RequestActor> const& actors) {
-        return actors.empty() ? 0.f : 19.f + static_cast<float>(actors.size()) * actorRowHeight();
-    }
-
-    void addActorRow(CCNode* parent, CCMenu* linkMenu, RequestActor const& actor, float y) {
-        if (!parent || actor.tag.empty()) return;
-        auto* icon = makeActorIcon(actor);
-        if (icon) {
-            icon->setPosition({23.f, y - 12.f});
-            parent->addChild(icon, 3);
-        }
-
-        std::string prefix;
-        if (actor.status == "sent") prefix = actorTypeLabel(actor.type, m_meta.platformer) + "  ";
-        else if (actor.status == "rejected") prefix = actorTypeLabel(actor.type, m_meta.platformer) + "  ";
-        float x = 43.f;
-        if (!prefix.empty()) {
-            auto* typeLabel = CCLabelTTF::create(prefix.c_str(), "Arial", 9.5f);
-            if (typeLabel) {
-                typeLabel->setAnchorPoint({0.f, 0.5f});
-                typeLabel->setColor(ccc3(190, 190, 190));
-                typeLabel->setPosition({x, y - 12.f});
-                parent->addChild(typeLabel, 2);
-                x += typeLabel->getContentSize().width + 2.f;
-            }
-        }
-
-        auto* tagLabel = CCLabelTTF::create(actor.tag.c_str(), "Arial", 10.5f);
-        if (!tagLabel) return;
-        tagLabel->setAnchorPoint({0.f, 0.5f});
-        tagLabel->setColor(actor.url.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
-        auto available = SCROLL_W - x - 10.f;
-        if (tagLabel->getContentSize().width > available && available > 10.f) {
-            tagLabel->setScale(available / tagLabel->getContentSize().width);
-        }
-        auto width = tagLabel->getContentSize().width * tagLabel->getScaleX();
-        if (!actor.url.empty() && linkMenu) {
-            tagLabel->setAnchorPoint({0.5f, 0.5f});
-            auto* button = CCMenuItemSpriteExtra::create(tagLabel, this, menu_selector(RequestInfoPopup::onActorLink));
-            if (button) {
-                button->m_animationEnabled = false;
-                button->setSizeMult(1.f);
-                button->setTag(static_cast<int>(m_actorLinks.size()));
-                m_actorLinks.push_back(actor.url);
-                button->setPosition({x + width * .5f, y - 12.f});
-                linkMenu->addChild(button, 5);
+    static void appendActor(std::vector<ActorGroup>& groups, RequestActor const& actor) {
+        if (actor.tag.empty()) return;
+        for (auto& group : groups) {
+            if (group.status == actor.status && group.type == actor.type) {
+                auto duplicate = std::find_if(group.actors.begin(), group.actors.end(), [&](auto const& existing) {
+                    return existing.tag == actor.tag;
+                });
+                if (duplicate == group.actors.end()) group.actors.push_back(actor);
                 return;
             }
         }
-        tagLabel->setPosition({x, y - 12.f});
-        parent->addChild(tagLabel, 2);
+        groups.push_back({actor.status, actor.type, {actor}});
+    }
+
+    static float actorRowHeight() { return 24.f; }
+
+    static std::vector<ActorGroup> groupActors(std::vector<RequestActor> const& actors) {
+        std::vector<ActorGroup> groups;
+        for (auto const& actor : actors) appendActor(groups, actor);
+        return groups;
+    }
+
+    static float actorSectionHeight(std::vector<RequestActor> const& actors) {
+        if (actors.empty()) return 0.f;
+        auto groups = groupActors(actors);
+        return 16.f + static_cast<float>(groups.size()) * actorRowHeight() + 4.f;
+    }
+
+    static float sentToSectionHeight(std::vector<RequestActor> const& actors) {
+        return actors.empty() ? 0.f : 16.f + static_cast<float>(groupActors(actors).size()) * actorRowHeight() + 4.f;
+    }
+
+    void addGroupedActorRow(CCNode* parent, CCMenu* linkMenu, ActorGroup const& group, float y) {
+        if (!parent || group.actors.empty()) return;
+
+        auto iconActor = group.actors.front();
+        auto* icon = makeActorIcon(iconActor);
+        if (icon) {
+            icon->setPosition({18.f, y - 9.f});
+            parent->addChild(icon, 3);
+        }
+
+        float x = 36.f;
+        auto prefix = actorTypeLabel(group.type, m_meta.platformer);
+        if (!prefix.empty()) {
+            prefix += "  ";
+            auto* typeLabel = CCLabelTTF::create(prefix.c_str(), "Arial", 9.f);
+            if (typeLabel) {
+                typeLabel->setAnchorPoint({0.f, 0.5f});
+                typeLabel->setColor(ccc3(190, 190, 190));
+                typeLabel->setPosition({x, y - 9.f});
+                parent->addChild(typeLabel, 2);
+                x += typeLabel->getContentSize().width + 1.f;
+            }
+        }
+
+        for (std::size_t i = 0; i < group.actors.size(); ++i) {
+            auto const& actor = group.actors[i];
+            auto tagText = actor.tag;
+            if (i + 1 < group.actors.size()) tagText += ",";
+
+            auto* tagLabel = CCLabelTTF::create(tagText.c_str(), "Arial", 9.5f);
+            if (!tagLabel) continue;
+            tagLabel->setAnchorPoint({0.f, 0.5f});
+            tagLabel->setColor(actor.url.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
+
+            auto available = SCROLL_W - x - 8.f;
+            if (tagLabel->getContentSize().width > available && available > 8.f) {
+                tagLabel->setScale(available / tagLabel->getContentSize().width);
+            }
+            auto width = tagLabel->getContentSize().width * tagLabel->getScaleX();
+
+            if (!actor.url.empty() && linkMenu) {
+                tagLabel->setAnchorPoint({0.5f, 0.5f});
+                auto* button = CCMenuItemSpriteExtra::create(tagLabel, this, menu_selector(RequestInfoPopup::onActorLink));
+                if (button) {
+                    button->m_animationEnabled = false;
+                    button->setSizeMult(1.f);
+                    button->setTag(static_cast<int>(m_actorLinks.size()));
+                    m_actorLinks.push_back(actor.url);
+                    button->setPosition({x + width * .5f, y - 9.f});
+                    linkMenu->addChild(button, 5);
+                }
+            } else {
+                tagLabel->setPosition({x, y - 9.f});
+                parent->addChild(tagLabel, 2);
+            }
+            x += width + 3.f;
+            if (x >= SCROLL_W - 8.f) break;
+        }
     }
 
     void addActorSection(CCNode* parent, CCMenu* linkMenu, std::string const& title, std::vector<RequestActor> const& actors, float& y) {
         if (actors.empty()) return;
+        auto groups = groupActors(actors);
+        if (groups.empty()) return;
+
         auto* heading = CCLabelBMFont::create(title.c_str(), "goldFont.fnt");
         if (heading) {
             heading->setScale(.38f);
@@ -3818,62 +3864,17 @@ protected:
             heading->setPosition({10.f, y});
             parent->addChild(heading, 2);
         }
-        y -= 19.f;
-
-        bool hasSent = false;
-        bool hasRejected = false;
-        for (auto const& actor : actors) {
-            if (actor.status == "sent") hasSent = true;
-            else if (actor.status == "rejected") hasRejected = true;
+        y -= 16.f;
+        for (auto const& group : groups) {
+            addGroupedActorRow(parent, linkMenu, group, y);
+            y -= actorRowHeight();
         }
-        if (hasSent) {
-            auto* sub = CCLabelTTF::create("Sent", "Arial", 9.5f);
-            if (sub) {
-                sub->setAnchorPoint({0.f, 1.f});
-                sub->setColor(ccc3(170, 170, 170));
-                sub->setPosition({10.f, y});
-                parent->addChild(sub, 2);
-            }
-            y -= 17.f;
-            for (auto const& actor : actors) {
-                if (actor.status != "sent") continue;
-                addActorRow(parent, linkMenu, actor, y);
-                y -= actorRowHeight();
-            }
-        }
-        if (hasRejected) {
-            auto* sub = CCLabelTTF::create("Rejected", "Arial", 9.5f);
-            if (sub) {
-                sub->setAnchorPoint({0.f, 1.f});
-                sub->setColor(ccc3(170, 170, 170));
-                sub->setPosition({10.f, y});
-                parent->addChild(sub, 2);
-            }
-            y -= 17.f;
-            for (auto const& actor : actors) {
-                if (actor.status != "rejected") continue;
-                addActorRow(parent, linkMenu, actor, y);
-                y -= actorRowHeight();
-            }
-        }
-        y -= 5.f;
+        y -= 4.f;
     }
 
     void addSentToSection(CCNode* parent, CCMenu* linkMenu, float& y) {
         if (m_meta.sentTo.empty()) return;
-        auto* heading = CCLabelBMFont::create("SENT TO", "goldFont.fnt");
-        if (heading) {
-            heading->setScale(.38f);
-            heading->setAnchorPoint({0.f, 1.f});
-            heading->setPosition({10.f, y});
-            parent->addChild(heading, 2);
-        }
-        y -= 19.f;
-        for (auto const& actor : m_meta.sentTo) {
-            addActorRow(parent, linkMenu, actor, y);
-            y -= actorRowHeight();
-        }
-        y -= 5.f;
+        addActorSection(parent, linkMenu, "SENT TO", m_meta.sentTo, y);
     }
 
     // Keep request metadata rows on the same two-line heading/value layout.
@@ -3924,7 +3925,8 @@ protected:
         if (!meta.helpers.empty()) required += 5.f + actorSectionHeight(meta.helpers);
         if (!meta.moderators.empty()) required += 5.f + actorSectionHeight(meta.moderators);
         if (!meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
-        if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty()) required += 24.f;
+        if (!meta.reviewers.empty()) required += 5.f + actorSectionHeight(meta.reviewers);
+        if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty() && meta.reviewers.empty()) required += 24.f;
         required += 10.f;
         float contentH = std::max(SCROLL_H, required);
 
@@ -4040,7 +4042,7 @@ protected:
                 y -= TTF_LINE_STEP;
             }
         } else if (infoLines.empty()) {
-            if (meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty()) {
+            if (meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty() && meta.reviewers.empty()) {
                 auto* empty = CCLabelTTF::create("No additional request info.", "Arial", TTF_SIZE);
                 if (empty) {
                     empty->setAnchorPoint({0.f, 1.f});
@@ -4055,49 +4057,53 @@ protected:
             y -= 5.f;
         }
         addActorSection(scroll->m_contentLayer, linkMenu, "HELPERS", meta.helpers, y);
-        addActorSection(scroll->m_contentLayer, linkMenu, "MODERATORS", meta.moderators, y);
         addSentToSection(scroll->m_contentLayer, linkMenu, y);
+        addActorSection(scroll->m_contentLayer, linkMenu, "MODERATORS", meta.moderators, y);
+        addActorSection(scroll->m_contentLayer, linkMenu, "REVIEWERS", meta.reviewers, y);
 
         scroll->scrollToTop();
 
         if (!meta.requesterTag.empty()) {
-            auto* label = CCLabelTTF::create("REQUESTED BY", "Arial", 9.5f);
+            auto* label = CCLabelBMFont::create("REQUESTED BY", "goldFont.fnt");
             if (label) {
+                label->setScale(.34f);
                 label->setAnchorPoint({0.f, 0.5f});
-                label->setColor(ccc3(170, 170, 170));
-                label->setPosition({SCROLL_X + 4.f, 19.f});
+                label->setPosition({SCROLL_X + 8.f, 18.f});
                 m_mainLayer->addChild(label, 3);
+            }
 
-                auto* tag = CCLabelTTF::create(meta.requesterTag.c_str(), "Arial", 10.5f);
-                if (tag) {
-                    tag->setAnchorPoint({0.f, 0.5f});
-                    tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
-                    auto x = SCROLL_X + 72.f;
-                    auto available = POPUP_W - x - 16.f;
-                    if (tag->getContentSize().width > available && available > 10.f) {
-                        tag->setScale(available / tag->getContentSize().width);
-                    }
-                    auto width = tag->getContentSize().width * tag->getScaleX();
-                    if (!meta.requesterURL.empty()) {
-                        tag->setAnchorPoint({0.5f, 0.5f});
-                        auto* menu = CCMenu::create();
-                        if (menu) {
-                            menu->setPosition({0.f, 0.f});
-                            m_mainLayer->addChild(menu, 4);
-                            auto* button = CCMenuItemSpriteExtra::create(tag, this, menu_selector(RequestInfoPopup::onActorLink));
-                            if (button) {
-                                button->m_animationEnabled = false;
-                                button->setSizeMult(1.f);
-                                button->setTag(static_cast<int>(m_actorLinks.size()));
-                                m_actorLinks.push_back(meta.requesterURL);
-                                button->setPosition({x + width * .5f, 19.f});
-                                menu->addChild(button, 5);
-                            }
+            auto* tag = CCLabelBMFont::create(meta.requesterTag.c_str(), "goldFont.fnt");
+            if (tag) {
+                tag->setScale(.42f);
+                tag->setAnchorPoint({0.f, 0.5f});
+                tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(255, 215, 90));
+                auto x = SCROLL_X + 78.f;
+                auto available = POPUP_W - x - 18.f;
+                auto tagWidth = tag->getContentSize().width * tag->getScale();
+                if (tagWidth > available && available > 10.f) {
+                    tag->setScale(tag->getScale() * (available / tagWidth));
+                    tagWidth = tag->getContentSize().width * tag->getScale();
+                }
+                auto width = tagWidth;
+                if (!meta.requesterURL.empty()) {
+                    tag->setAnchorPoint({0.5f, 0.5f});
+                    auto* menu = CCMenu::create();
+                    if (menu) {
+                        menu->setPosition({0.f, 0.f});
+                        m_mainLayer->addChild(menu, 4);
+                        auto* button = CCMenuItemSpriteExtra::create(tag, this, menu_selector(RequestInfoPopup::onActorLink));
+                        if (button) {
+                            button->m_animationEnabled = false;
+                            button->setSizeMult(1.f);
+                            button->setTag(static_cast<int>(m_actorLinks.size()));
+                            m_actorLinks.push_back(meta.requesterURL);
+                            button->setPosition({x + width * .5f, 18.f});
+                            menu->addChild(button, 5);
                         }
-                    } else {
-                        tag->setPosition({x, 19.f});
-                        m_mainLayer->addChild(tag, 3);
                     }
+                } else {
+                    tag->setPosition({x, 18.f});
+                    m_mainLayer->addChild(tag, 3);
                 }
             }
         }
