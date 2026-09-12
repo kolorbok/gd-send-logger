@@ -3043,11 +3043,25 @@ protected:
             }
 
             if (!res.ok()) {
-                self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
-                if (self->m_metaLabel) {
-                    self->m_metaLabel->setString(
-                        limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
+                if (text.find("ERR\tgd_account_not_linked") != std::string::npos) {
+                    self->setStatus("Geometry Dash account is not linked");
+                    if (self->m_metaLabel) {
+                        self->m_metaLabel->setString(
+                            "Link your GD account in Discord with /link-gd before viewing requests."
+                        );
+                    }
+                    showAlert(
+                        MOD_NAME,
+                        "You cannot view Server Requests until your Geometry Dash account is linked and verified with the Discord bot.\n\n"
+                        "Open Discord and use /link-gd to link your Geometry Dash account, then return here and press Refresh."
                     );
+                } else {
+                    self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
+                    if (self->m_metaLabel) {
+                        self->m_metaLabel->setString(
+                            limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
+                        );
+                    }
                 }
                 self->refreshButtons();
                 self->release();
