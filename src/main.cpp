@@ -3533,21 +3533,21 @@ protected:
     bool initFor(std::string const& staffDiscordID, std::string const& currentName) {
         m_staffDiscordID = staffDiscordID;
         m_value = currentName;
-        if (!Popup::init(300.f, 170.f)) return false;
+        if (!Popup::init(260.f, 145.f)) return false;
         setTitle("RENAME STAFF", "goldFont.fnt", .58f, 20.f);
 
-        m_input = geode::TextInput::create(235.f, "STAFF NAME", "chatFont.fnt");
+        m_input = geode::TextInput::create(210.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({150.f, 78.f});
+        m_input->setPosition({130.f, 72.f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
         m_input->setCallback([this](std::string const& value) { m_value = value; });
         m_mainLayer->addChild(m_input, 2);
 
-        auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "chatFont.fnt");
+        auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "goldFont.fnt");
         if (idLabel) {
-            idLabel->setScale(.32f);
+            idLabel->setScale(.27f);
             idLabel->setAnchorPoint({0.5f, 0.5f});
             auto* idButton = CCMenuItemSpriteExtra::create(
                 idLabel, this, menu_selector(StaffRenamePopup::onCopyDiscordID)
@@ -3555,7 +3555,7 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({150.f, 50.f});
+                idButton->setPosition({130.f, 43.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
@@ -3565,8 +3565,8 @@ protected:
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({98.f, 28.f});
-        saveBtn->setPosition({202.f, 28.f});
+        cancelBtn->setPosition({85.f, 22.f});
+        saveBtn->setPosition({175.f, 22.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
@@ -3788,6 +3788,7 @@ protected:
     }
 
     std::vector<std::string> m_actorLinks;
+    std::vector<std::string> m_actorRenameNames;
 
     void onActorLink(CCObject* sender) {
         auto* item = static_cast<CCMenuItemSpriteExtra*>(sender);
@@ -3802,7 +3803,11 @@ protected:
         if (target.starts_with(renamePrefix)) {
             auto staffID = std::string(target.substr(renamePrefix.size()));
             if (!staffID.empty() && staffID.find_first_not_of("0123456789") == std::string::npos) {
-                auto* popup = StaffRenamePopup::create(staffID, "");
+                std::string currentName;
+                if (index >= 0 && static_cast<std::size_t>(index) < m_actorRenameNames.size()) {
+                    currentName = m_actorRenameNames[index];
+                }
+                auto* popup = StaffRenamePopup::create(staffID, currentName);
                 if (popup) popup->show();
             }
             return;
@@ -3839,7 +3844,7 @@ protected:
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
         // All actor/rejection icons are native Geometry Dash sprites.
-        constexpr float targetVisualHeight = 20.f;
+        constexpr float targetVisualHeight = 16.5f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
@@ -3857,8 +3862,9 @@ protected:
                 sprite = CCSprite::createWithSpriteFrameName(frameName);
             } else if (actor.type == "plain_rejected") {
                 auto path = (Mod::get()->getResourcesDir() / "request-rejected.png").string();
-                auto* texture = CCTextureCache::sharedTextureCache()->addImage(path.c_str(), false);
-                if (texture) sprite = CCSprite::createWithTexture(texture);
+                // This is a standalone mod resource, not a GD sprite-frame.
+                // Load it directly so it does not depend on the global frame cache.
+                sprite = CCSprite::create(path.c_str());
             }
         } else if (actor.status == "sent_to") {
             sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
@@ -3922,10 +3928,17 @@ protected:
         auto iconActor = group.actors.front();
         auto* icon = makeActorIcon(iconActor);
         if (icon) {
-            // The icon is intentionally kept inside the scroll content bounds.
-            // A little horizontal inset also prevents its transparent edges from
-            // making it look detached from the text.
-            icon->setPosition({18.f, y - 9.f});
+            // Keep the whole sprite inside the scroll content bounds. In particular,
+            // GJ_sModIcon_001 has transparent/oversized frame bounds, so moving its
+            // center too close to the top edge can make the sprite appear clipped.
+            float halfH = icon->getContentSize().height * icon->getScaleY() * .5f;
+            float iconY = y - 9.f;
+            if (auto* layer = static_cast<CCLayer*>(parent)) {
+                auto contentH = layer->getContentSize().height;
+                iconY = std::min(iconY, contentH - halfH - 1.f);
+                iconY = std::max(iconY, halfH + 1.f);
+            }
+            icon->setPosition({18.f, iconY});
             parent->addChild(icon, 3);
         }
 
@@ -3978,6 +3991,7 @@ protected:
                     button->setSizeMult(1.f);
                     button->setTag(static_cast<int>(m_actorLinks.size()));
                     m_actorLinks.push_back(actor.url);
+                    m_actorRenameNames.push_back(actor.url.rfind("staffrename://", 0) == 0 ? actor.tag : "");
                     button->setPosition({x + width * .5f, y - 9.f});
                     linkMenu->addChild(button, 5);
                 }
@@ -4256,12 +4270,12 @@ protected:
                             button->setSizeMult(1.f);
                             button->setTag(static_cast<int>(m_actorLinks.size()));
                             m_actorLinks.push_back(meta.requesterURL);
-                            button->setPosition({requesterX + tagWidth * .5f, requesterY});
+                            button->setPosition({requesterX + tagWidth * .5f, requesterY + 1.f});
                             m_buttonMenu->addChild(button, 20);
                         }
                     }
                 } else {
-                    tag->setPosition({requesterX, requesterY});
+                    tag->setPosition({requesterX, requesterY + 1.f});
                     m_mainLayer->addChild(tag, 3);
                 }
             }
