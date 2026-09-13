@@ -3466,16 +3466,6 @@ protected:
         g_staffRenamePlaceholder = nullptr;
     }
 
-    // Do not manually blink m_cursor here. CCTextInputNode also has the native
-    // text-field caret, so toggling m_cursor made the popup alternate between
-    // two different caret positions: our adjusted BMFont caret while typing and
-    // the native caret when the BMFont caret was hidden. Keep our adjusted caret
-    // visible while the field is selected instead.
-    void blinkStaffCursor(float) {
-        auto* node = m_input ? m_input->getInputNode() : nullptr;
-        if (!node || !node->m_cursor) return;
-        node->m_cursor->setVisible(node->m_selected);
-    }
 
     void onCancel(CCObject*) { this->onClose(nullptr); }
 
@@ -3624,18 +3614,10 @@ public:
         CCTextInputNode::onClickTrackNode(selected);
         if (this != g_staffRenameInputNode) return;
 
+        // v2.0.55 did not move the caret horizontally on focus. Keep that
+        // native behaviour and only hide our external placeholder.
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
-        }
-
-        if (m_cursor) {
-            m_cursor->setVisible(selected);
-        }
-
-        // When the field is empty, put the caret at the same center position
-        // that it has immediately after opening the field.
-        if (selected && getString().empty() && m_cursor) {
-            m_cursor->setPositionX(getContentSize().width * .5f);
         }
     }
 
@@ -3643,17 +3625,11 @@ public:
         CCTextInputNode::updateCursorPosition(position, rect);
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
+        // Keep the exact vertical adjustment from v2.0.55. Do not manually
+        // move the caret when focus changes; the game handles its horizontal
+        // position correctly by itself.
         m_cursor->setScale(.65f);
-
-        // GD draws the native caret and CCTextInputNode's BMFont caret at
-        // slightly different heights. The old +2.5f put our caret above the
-        // native one. Put it halfway between the two instead. Because the
-        // base implementation is called first, this offset never accumulates.
-        m_cursor->setPositionY(m_cursor->getPositionY() + 1.25f);
-
-        if (getString().empty()) {
-            m_cursor->setPositionX(getContentSize().width * .5f);
-        }
+        m_cursor->setPositionY(m_cursor->getPositionY() + 1.5f);
     }
 };
 
