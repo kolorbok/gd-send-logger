@@ -2149,7 +2149,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected, bool 
             starsLabel->setAnchorPoint({1.f, .5f});
             // Restore the original Demon 10★ geometry; normal difficulties keep
             // their existing tested coordinates.
-            starsLabel->setPosition(isDemonDifficulty(key) ? CCPoint{35.0f, 8.8f} : CCPoint{31.4f, 18.4f});
+            starsLabel->setPosition(isDemonDifficulty(key) ? CCPoint{35.0f, 13.2f} : CCPoint{31.4f, 18.4f});
             starsLabel->setOpacity(255);
             starsLabel->setColor(selected ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             tile->addChild(starsLabel, 4);
@@ -2173,7 +2173,7 @@ static CCSprite* makeDifficultyTile(std::string const& key, bool selected, bool 
                 }
             }
             star->setScale(iconScale);
-            star->setPosition(isDemonDifficulty(key) ? CCPoint{47.2f, 8.5f} : CCPoint{42.8f, 18.1f});
+            star->setPosition(isDemonDifficulty(key) ? CCPoint{47.2f, 12.9f} : CCPoint{42.8f, 18.1f});
             star->setOpacity(255);
             star->setColor(selected ? ccc3(255, 255, 255) : ccc3(166, 166, 166));
             tile->addChild(star, 4);
@@ -3725,11 +3725,11 @@ protected:
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
         // All actor/rejection icons are native Geometry Dash sprites.
-        constexpr float targetVisualHeight = 20.f;
+        constexpr float targetVisualHeight = 26.f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
-                sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
+                sprite = CCSprite::createWithSpriteFrameName("GJ_starBtnMod_001.png");
             } else {
                 sprite = makeEmbeddedSendIcon(actor.type);
             }
@@ -3779,7 +3779,7 @@ protected:
         groups.push_back({actor.status, actor.type, {actor}});
     }
 
-    static float actorRowHeight() { return 24.f; }
+    static float actorRowHeight() { return 28.f; }
 
     static std::vector<ActorGroup> groupActors(std::vector<RequestActor> const& actors) {
         std::vector<ActorGroup> groups;
@@ -3803,11 +3803,15 @@ protected:
         auto iconActor = group.actors.front();
         auto* icon = makeActorIcon(iconActor);
         if (icon) {
-            icon->setPosition({18.f, y - 9.f});
+            // The icon is intentionally kept inside the scroll content bounds.
+            // A little horizontal inset also prevents its transparent edges from
+            // making it look detached from the text.
+            icon->setPosition({15.f, y - 9.f});
             parent->addChild(icon, 3);
         }
 
-        float x = 36.f;
+        // Keep the text visually close to the icon without letting the icon overlap it.
+        float x = 29.f;
         auto prefix = actorTypeLabel(group.type, m_meta.platformer);
         if (!prefix.empty()) {
             prefix += "  ";
@@ -3953,7 +3957,11 @@ protected:
         if (!meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
         if (!meta.reviewers.empty()) required += 5.f + actorSectionHeight(meta.reviewers);
         if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty() && meta.reviewers.empty()) required += 24.f;
-        required += 10.f;
+        // Keep enough top/bottom padding for the largest actor icon. Without this,
+        // an icon near the edge of the clipped content layer can disappear while
+        // the text is still visible during scrolling.
+        constexpr float CONTENT_PADDING = 20.f;
+        required += CONTENT_PADDING;
         float contentH = std::max(SCROLL_H, required);
 
         auto* scroll = geode::ScrollLayer::create(CCSize(SCROLL_W, SCROLL_H), true, true);
@@ -3983,7 +3991,7 @@ protected:
 
         // Metadata rows are laid out from the rows that are actually present.
         // Do not reserve a row for a disabled/missing REVIEW or FEEDBACK field.
-        float y = contentH - 10.f;
+        float y = contentH - CONTENT_PADDING;
         for (std::size_t i = 0; i < infoLines.size(); ++i) {
             addInfoLine(scroll->m_contentLayer, infoLines[i].first, infoLines[i].second, y);
             y -= INFO_LINE_STEP;
@@ -4091,44 +4099,50 @@ protected:
 
         if (!meta.requesterTag.empty()) {
             auto* label = CCLabelBMFont::create("REQUESTED BY", "goldFont.fnt");
+            float requesterX = SCROLL_X + 8.f;
+            float requesterY = 18.f;
             if (label) {
                 label->setScale(.34f);
                 label->setAnchorPoint({0.f, 0.5f});
-                label->setPosition({SCROLL_X + 8.f, 18.f});
+                label->setPosition({requesterX, requesterY});
                 m_mainLayer->addChild(label, 3);
+                requesterX += label->getContentSize().width * label->getScale() + 7.f;
             }
 
             auto* tag = CCLabelBMFont::create(meta.requesterTag.c_str(), "goldFont.fnt");
             if (tag) {
                 tag->setScale(.42f);
                 tag->setAnchorPoint({0.f, 0.5f});
-                tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(255, 215, 90));
-                auto x = SCROLL_X + 78.f;
-                auto available = POPUP_W - x - 18.f;
+                // Linked requester = native GD profile link (blue).
+                // Unlinked requester = plain Sheet nickname, already prefixed by the bridge.
+                tag->setColor(meta.requesterURL.empty() ? ccc3(255, 255, 255) : ccc3(85, 190, 255));
+                auto available = POPUP_W - requesterX - 18.f;
                 auto tagWidth = tag->getContentSize().width * tag->getScale();
                 if (tagWidth > available && available > 10.f) {
                     tag->setScale(tag->getScale() * (available / tagWidth));
                     tagWidth = tag->getContentSize().width * tag->getScale();
                 }
-                auto width = tagWidth;
+
                 if (!meta.requesterURL.empty()) {
-                    tag->setAnchorPoint({0.5f, 0.5f});
-                    auto* menu = CCMenu::create();
-                    if (menu) {
-                        menu->setPosition({0.f, 0.f});
-                        m_mainLayer->addChild(menu, 4);
-                        auto* button = CCMenuItemSpriteExtra::create(tag, this, menu_selector(RequestInfoPopup::onActorLink));
+                    // Put the requester link into Popup's native button menu instead of
+                    // a second free-floating CCMenu. This keeps its touch handling above
+                    // the scroll layer and makes the native GD profile link reliably clickable.
+                    if (m_buttonMenu) {
+                        tag->setAnchorPoint({0.5f, 0.5f});
+                        auto* button = CCMenuItemSpriteExtra::create(
+                            tag, this, menu_selector(RequestInfoPopup::onActorLink)
+                        );
                         if (button) {
                             button->m_animationEnabled = false;
                             button->setSizeMult(1.f);
                             button->setTag(static_cast<int>(m_actorLinks.size()));
                             m_actorLinks.push_back(meta.requesterURL);
-                            button->setPosition({x + width * .5f, 18.f});
-                            menu->addChild(button, 5);
+                            button->setPosition({requesterX + tagWidth * .5f, requesterY});
+                            m_buttonMenu->addChild(button, 20);
                         }
                     }
                 } else {
-                    tag->setPosition({x, 18.f});
+                    tag->setPosition({requesterX, requesterY});
                     m_mainLayer->addChild(tag, 3);
                 }
             }
