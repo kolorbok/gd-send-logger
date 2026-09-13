@@ -3502,10 +3502,6 @@ protected:
             return;
         }
         auto value = trim(m_value);
-        if (value.empty()) {
-            FLAlertLayer::create("GD Requests", "Staff name cannot be empty.", "OK")->show();
-            return;
-        }
         if (value.size() > 32) value.resize(32);
 
         auto body = matjson::Value();
@@ -3533,12 +3529,12 @@ protected:
     bool initFor(std::string const& staffDiscordID, std::string const& currentName) {
         m_staffDiscordID = staffDiscordID;
         m_value = currentName;
-        if (!Popup::init(260.f, 145.f)) return false;
-        setTitle("RENAME STAFF", "goldFont.fnt", .58f, 20.f);
+        if (!Popup::init(250.f, 130.f)) return false;
+        setTitle("RENAME STAFF", "goldFont.fnt", .55f, 20.f);
 
-        m_input = geode::TextInput::create(210.f, "STAFF NAME", "chatFont.fnt");
+        m_input = geode::TextInput::create(190.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({130.f, 72.f});
+        m_input->setPosition({125.f, 65.f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
@@ -3547,7 +3543,7 @@ protected:
 
         auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "goldFont.fnt");
         if (idLabel) {
-            idLabel->setScale(.27f);
+            idLabel->setScale(.23f);
             idLabel->setAnchorPoint({0.5f, 0.5f});
             auto* idButton = CCMenuItemSpriteExtra::create(
                 idLabel, this, menu_selector(StaffRenamePopup::onCopyDiscordID)
@@ -3555,18 +3551,18 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({130.f, 43.f});
+                idButton->setPosition({125.f, 38.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .55f);
-        auto* saveSpr = ButtonSprite::create("SAVE", 80, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .55f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 70, true, "bigFont.fnt", "GJ_button_04.png", 24.f, .50f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 70, true, "bigFont.fnt", "GJ_button_01.png", 24.f, .50f);
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({85.f, 22.f});
-        saveBtn->setPosition({175.f, 22.f});
+        cancelBtn->setPosition({83.f, 17.f});
+        saveBtn->setPosition({167.f, 17.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
@@ -3801,7 +3797,9 @@ protected:
         // gdprofile://<account-id>, so no browser/GDBrowser is involved.
         constexpr std::string_view renamePrefix = "staffrename://";
         if (target.starts_with(renamePrefix)) {
-            auto staffID = std::string(target.substr(renamePrefix.size()));
+            auto renamePayload = std::string(target.substr(renamePrefix.size()));
+            auto separator = renamePayload.find('|');
+            auto staffID = separator == std::string::npos ? renamePayload : renamePayload.substr(0, separator);
             if (!staffID.empty() && staffID.find_first_not_of("0123456789") == std::string::npos) {
                 std::string currentName;
                 if (index >= 0 && static_cast<std::size_t>(index) < m_actorRenameNames.size()) {
@@ -3844,7 +3842,7 @@ protected:
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
         // All actor/rejection icons are native Geometry Dash sprites.
-        constexpr float targetVisualHeight = 16.5f;
+        constexpr float targetVisualHeight = 15.f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
@@ -3935,8 +3933,8 @@ protected:
             float iconY = y - 9.f;
             if (auto* layer = static_cast<CCLayer*>(parent)) {
                 auto contentH = layer->getContentSize().height;
-                iconY = std::min(iconY, contentH - halfH - 1.f);
-                iconY = std::max(iconY, halfH + 1.f);
+                iconY = std::min(iconY, contentH - halfH - 7.f);
+                iconY = std::max(iconY, halfH + 7.f);
             }
             icon->setPosition({18.f, iconY});
             parent->addChild(icon, 3);
@@ -3991,7 +3989,13 @@ protected:
                     button->setSizeMult(1.f);
                     button->setTag(static_cast<int>(m_actorLinks.size()));
                     m_actorLinks.push_back(actor.url);
-                    m_actorRenameNames.push_back(actor.url.rfind("staffrename://", 0) == 0 ? actor.tag : "");
+                    if (actor.url.rfind("staffrename://", 0) == 0) {
+                        auto renamePayload = actor.url.substr(std::string("staffrename://").size());
+                        auto sep = renamePayload.find('|');
+                        m_actorRenameNames.push_back(sep == std::string::npos ? "" : renamePayload.substr(sep + 1));
+                    } else {
+                        m_actorRenameNames.push_back("");
+                    }
                     button->setPosition({x + width * .5f, y - 9.f});
                     linkMenu->addChild(button, 5);
                 }
@@ -4270,12 +4274,12 @@ protected:
                             button->setSizeMult(1.f);
                             button->setTag(static_cast<int>(m_actorLinks.size()));
                             m_actorLinks.push_back(meta.requesterURL);
-                            button->setPosition({requesterX + tagWidth * .5f, requesterY + 1.f});
+                            button->setPosition({requesterX + tagWidth * .5f, requesterY + .5f});
                             m_buttonMenu->addChild(button, 20);
                         }
                     }
                 } else {
-                    tag->setPosition({requesterX, requesterY + 1.f});
+                    tag->setPosition({requesterX, requesterY + .5f});
                     m_mainLayer->addChild(tag, 3);
                 }
             }
