@@ -3455,8 +3455,6 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
 
 static CCTextInputNode* g_staffRenameInputNode = nullptr;
 static CCLabelBMFont* g_staffRenamePlaceholder = nullptr;
-static float g_staffRenameNativeTextFieldY = 0.f;
-static bool g_staffRenameNativeTextFieldYCaptured = false;
 
 class StaffRenamePopup final : public geode::Popup {
 protected:
@@ -3470,7 +3468,6 @@ protected:
             g_staffRenameInputNode = nullptr;
         }
         g_staffRenamePlaceholder = nullptr;
-        g_staffRenameNativeTextFieldYCaptured = false;
     }
 
 
@@ -3621,42 +3618,43 @@ public:
         CCTextInputNode::onClickTrackNode(selected);
         if (this != g_staffRenameInputNode) return;
 
-        // Keep the native horizontal caret placement from v2.0.55. The only
-        // extra focus behaviour is hiding our external placeholder.
+        // Keep the native horizontal caret placement exactly as in v2.0.55.
+        // Our only focus-side change is hiding the external placeholder.
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
         }
-
-        // CCTextFieldTTF draws a second/native caret while text is actively
-        // being entered. Raise that caret without touching the visible text
-        // label. Capture the game's own baseline once to avoid cumulative shifts.
-        if (selected && m_textField) {
-            if (!g_staffRenameNativeTextFieldYCaptured) {
-                g_staffRenameNativeTextFieldY = m_textField->getPositionY();
-                g_staffRenameNativeTextFieldYCaptured = true;
-            }
-            m_textField->setPositionY(g_staffRenameNativeTextFieldY + 3.f);
-        }
-    }
-
-    void visit() {
-        if (this == g_staffRenameInputNode && m_textField && m_selected) {
-            if (!g_staffRenameNativeTextFieldYCaptured) {
-                g_staffRenameNativeTextFieldY = m_textField->getPositionY();
-                g_staffRenameNativeTextFieldYCaptured = true;
-            }
-            m_textField->setPositionY(g_staffRenameNativeTextFieldY + 3.f);
-        }
-        CCTextInputNode::visit();
     }
 
     void updateCursorPosition(CCPoint position, CCRect rect) {
         CCTextInputNode::updateCursorPosition(position, rect);
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
-        // This is the normal, non-IME caret. Keep the v2.0.55 vertical position.
+        // This is the CCTextInputNode caret that was already correct in v2.0.55.
+        // Do not move it horizontally or cumulatively.
         m_cursor->setScale(.65f);
         m_cursor->setPositionY(m_cursor->getPositionY() + 1.5f);
+    }
+};
+
+// CCTextFieldTTF draws a second/native caret while text is being edited.
+// In Geometry Dash its caret is vertically centered from the field's content
+// height. Temporarily increasing that height by 6 points during draw raises
+// only the native caret's center by 3 points, while restoring the original
+// size immediately afterwards so the text field itself is not permanently moved.
+class $modify(GDRequestsStaffRenameNativeCaret, CCTextFieldTTF) {
+public:
+    void draw() {
+        if (g_staffRenameInputNode &&
+            g_staffRenameInputNode->m_textField == this &&
+            g_staffRenameInputNode->m_selected &&
+            !std::string(getString() ? getString() : "").empty()) {
+            auto originalSize = getContentSize();
+            setContentSize({originalSize.width, originalSize.height + 6.f});
+            CCTextFieldTTF::draw();
+            setContentSize(originalSize);
+            return;
+        }
+        CCTextFieldTTF::draw();
     }
 };
 
