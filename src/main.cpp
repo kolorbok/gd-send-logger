@@ -3529,12 +3529,12 @@ protected:
     bool initFor(std::string const& staffDiscordID, std::string const& currentName) {
         m_staffDiscordID = staffDiscordID;
         m_value = currentName;
-        if (!Popup::init(240.f, 120.f)) return false;
+        if (!Popup::init(240.f, 110.f)) return false;
         setTitle("RENAME STAFF", "goldFont.fnt", .55f, 20.f);
 
         m_input = geode::TextInput::create(180.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({120.f, 73.f});
+        m_input->setPosition({120.f, 63.5f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
@@ -3551,7 +3551,7 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({120.f, 49.f});
+                idButton->setPosition({120.f, 44.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
@@ -3561,8 +3561,8 @@ protected:
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({72.f, 20.f});
-        saveBtn->setPosition({168.f, 20.f});
+        cancelBtn->setPosition({72.f, 25.f});
+        saveBtn->setPosition({168.f, 25.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
@@ -3930,7 +3930,7 @@ protected:
             // GJ_sModIcon_001 has transparent/oversized frame bounds, so moving its
             // center too close to the top edge can make the sprite appear clipped.
             float halfH = icon->getContentSize().height * icon->getScaleY() * .5f;
-            float iconY = y - (group.status == "sent_to" ? 6.f : 9.f);
+            float iconY = y - 9.f;
             if (auto* layer = static_cast<CCLayer*>(parent)) {
                 auto contentH = layer->getContentSize().height;
                 iconY = std::min(iconY, contentH - halfH - 7.f);
