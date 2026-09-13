@@ -182,6 +182,9 @@ struct RequestMeta {
     std::vector<RequestActor> moderators;
     std::vector<RequestActor> reviewers;
     std::vector<RequestActor> sentTo;
+    // Core only shows Sent To when both Helpers and Moderators workflows are configured.
+    // Old bridge responses did not carry this flag, so keep the legacy default enabled.
+    bool sentToEnabled = true;
 };
 
 struct ClientState {
@@ -834,6 +837,7 @@ static bool parseRequestsResponse(std::string const& text) {
             if (parts.size() >= 17) meta.moderators = parseRequestActors(unescapeRequestField(parts[16]));
             if (parts.size() >= 18) meta.sentTo = parseRequestActors(unescapeRequestField(parts[17]));
             if (parts.size() >= 19) meta.reviewers = parseRequestActors(unescapeRequestField(parts[18]));
+            if (parts.size() >= 20) meta.sentToEnabled = parseInt(parts[19]) != 0;
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -3451,6 +3455,8 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
 
 static CCTextInputNode* g_staffRenameInputNode = nullptr;
 static CCLabelBMFont* g_staffRenamePlaceholder = nullptr;
+static float g_staffRenameNativeTextFieldY = 0.f;
+static bool g_staffRenameNativeTextFieldYCaptured = false;
 
 class StaffRenamePopup final : public geode::Popup {
 protected:
@@ -3464,6 +3470,7 @@ protected:
             g_staffRenameInputNode = nullptr;
         }
         g_staffRenamePlaceholder = nullptr;
+        g_staffRenameNativeTextFieldYCaptured = false;
     }
 
 
@@ -3614,20 +3621,40 @@ public:
         CCTextInputNode::onClickTrackNode(selected);
         if (this != g_staffRenameInputNode) return;
 
-        // v2.0.55 did not move the caret horizontally on focus. Keep that
-        // native behaviour and only hide our external placeholder.
+        // Keep the native horizontal caret placement from v2.0.55. The only
+        // extra focus behaviour is hiding our external placeholder.
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
         }
+
+        // CCTextFieldTTF draws a second/native caret while text is actively
+        // being entered. Raise that caret without touching the visible text
+        // label. Capture the game's own baseline once to avoid cumulative shifts.
+        if (selected && m_textField) {
+            if (!g_staffRenameNativeTextFieldYCaptured) {
+                g_staffRenameNativeTextFieldY = m_textField->getPositionY();
+                g_staffRenameNativeTextFieldYCaptured = true;
+            }
+            m_textField->setPositionY(g_staffRenameNativeTextFieldY + 3.f);
+        }
+    }
+
+    void visit() {
+        if (this == g_staffRenameInputNode && m_textField && m_selected) {
+            if (!g_staffRenameNativeTextFieldYCaptured) {
+                g_staffRenameNativeTextFieldY = m_textField->getPositionY();
+                g_staffRenameNativeTextFieldYCaptured = true;
+            }
+            m_textField->setPositionY(g_staffRenameNativeTextFieldY + 3.f);
+        }
+        CCTextInputNode::visit();
     }
 
     void updateCursorPosition(CCPoint position, CCRect rect) {
         CCTextInputNode::updateCursorPosition(position, rect);
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
-        // Keep the exact vertical adjustment from v2.0.55. Do not manually
-        // move the caret when focus changes; the game handles its horizontal
-        // position correctly by itself.
+        // This is the normal, non-IME caret. Keep the v2.0.55 vertical position.
         m_cursor->setScale(.65f);
         m_cursor->setPositionY(m_cursor->getPositionY() + 1.5f);
     }
@@ -4145,7 +4172,7 @@ protected:
         }
         if (!meta.helpers.empty()) required += 5.f + actorSectionHeight(meta.helpers);
         if (!meta.moderators.empty()) required += 5.f + actorSectionHeight(meta.moderators);
-        if (!meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
+        if (meta.sentToEnabled && !meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
         if (!meta.reviewers.empty()) required += 5.f + actorSectionHeight(meta.reviewers);
         if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty() && meta.reviewers.empty()) required += 24.f;
         constexpr float CONTENT_PADDING = 30.f;
@@ -4281,7 +4308,9 @@ protected:
             y -= 5.f;
         }
         addActorSection(scroll->m_contentLayer, linkMenu, "HELPERS", meta.helpers, y);
-        addSentToSection(scroll->m_contentLayer, linkMenu, y);
+        if (meta.sentToEnabled) {
+            addSentToSection(scroll->m_contentLayer, linkMenu, y);
+        }
         addActorSection(scroll->m_contentLayer, linkMenu, "MODERATORS", meta.moderators, y);
         addActorSection(scroll->m_contentLayer, linkMenu, "REVIEWERS", meta.reviewers, y);
 
