@@ -3492,6 +3492,7 @@ protected:
     std::string m_staffDiscordID;
     std::string m_value;
     geode::TextInput* m_input = nullptr;
+    bool m_saveInProgress = false;
 
     ~StaffRenamePopup() override {
         if (g_staffRenameInputNode && (!m_input || g_staffRenameInputNode == m_input->getInputNode())) {
@@ -3518,9 +3519,17 @@ protected:
         }
     }
 
+    void closeAfterStaffSave(float) {
+        this->onClose(nullptr);
+    }
+
     void onSave(CCObject*) {
+        if (m_saveInProgress) return;
+        m_saveInProgress = true;
+
         auto key = Mod::get()->getSettingValue<std::string>("connection-key");
         if (key.empty()) {
+            m_saveInProgress = false;
             FLAlertLayer::create("GD Requests", "Connection Key is empty.", "OK")->show();
             return;
         }
@@ -3540,6 +3549,7 @@ protected:
             auto text = res.string().unwrapOr("");
             geode::queueInMainThread([this, res, text = std::move(text)]() mutable {
                 if (!res.ok()) {
+                    m_saveInProgress = false;
                     FLAlertLayer::create("GD Requests", ("Could not save staff name.\n\nHTTP " + std::to_string(res.code()) + (text.empty() ? "" : "\n" + text)).c_str(), "OK")->show();
                 } else {
                     auto* success = FLAlertLayer::create(
@@ -3547,8 +3557,11 @@ protected:
                         "Staff nickname saved successfully.",
                         "OK"
                     );
-                    this->onClose(nullptr);
-                    success->show();
+                    // Show the result alert before closing the edit popup. Closing the
+                    // parent immediately after creating the alert could occasionally
+                    // remove/interfere with the just-created alert layer.
+                    if (success) success->show();
+                    this->scheduleOnce(schedule_selector(StaffRenamePopup::closeAfterStaffSave), 0.f);
                 }
                 this->release();
             });
@@ -3647,6 +3660,11 @@ public:
         if (this != g_staffRenameInputNode) return;
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
+        }
+        if (selected && m_cursor && getString().empty()) {
+            // CCTextInputNode can initially place the caret at the right edge when
+            // an empty field receives focus. Keep an empty Rename Staff field centered.
+            m_cursor->setPositionX(getContentSize().width * .5f);
         }
     }
 
