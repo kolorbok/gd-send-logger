@@ -3466,14 +3466,15 @@ protected:
         g_staffRenamePlaceholder = nullptr;
     }
 
+    // Do not manually blink m_cursor here. CCTextInputNode also has the native
+    // text-field caret, so toggling m_cursor made the popup alternate between
+    // two different caret positions: our adjusted BMFont caret while typing and
+    // the native caret when the BMFont caret was hidden. Keep our adjusted caret
+    // visible while the field is selected instead.
     void blinkStaffCursor(float) {
         auto* node = m_input ? m_input->getInputNode() : nullptr;
         if (!node || !node->m_cursor) return;
-        if (!node->m_selected) {
-            node->m_cursor->setVisible(false);
-            return;
-        }
-        node->m_cursor->setVisible(!node->m_cursor->isVisible());
+        node->m_cursor->setVisible(node->m_selected);
     }
 
     void onCancel(CCObject*) { this->onClose(nullptr); }
@@ -3576,7 +3577,6 @@ protected:
                 g_staffRenameInputNode->m_cursor->setScale(.65f);
                 g_staffRenameInputNode->m_cursor->setVisible(false);
             }
-            this->schedule(schedule_selector(StaffRenamePopup::blinkStaffCursor), .5f);
         }
 
         auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "goldFont.fnt");
@@ -3626,6 +3626,10 @@ public:
 
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
+        }
+
+        if (m_cursor) {
+            m_cursor->setVisible(selected);
         }
 
         // When the field is empty, put the caret at the same center position
