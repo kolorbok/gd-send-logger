@@ -3620,23 +3620,12 @@ public:
 
 class $modify(GDRequestsStaffRenameCursor, CCTextInputNode) {
 public:
-    void onClickTrackNode(bool selected) {
-        CCTextInputNode::onClickTrackNode(selected);
-        if (this != g_staffRenameInputNode) return;
-        if (selected && g_staffRenamePlaceholder) {
-            g_staffRenamePlaceholder->setVisible(false);
-        }
-    }
-
     void updateCursorPosition(CCPoint position, CCRect rect) {
         CCTextInputNode::updateCursorPosition(position, rect);
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
         m_cursor->setScale(.65f);
         m_cursor->setPositionY(m_cursor->getPositionY() + 2.5f);
-        if (m_selected && getString().empty()) {
-            m_cursor->setPositionX(getContentSize().width * .5f);
-        }
     }
 };
 
