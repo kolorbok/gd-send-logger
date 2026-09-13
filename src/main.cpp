@@ -3529,12 +3529,12 @@ protected:
     bool initFor(std::string const& staffDiscordID, std::string const& currentName) {
         m_staffDiscordID = staffDiscordID;
         m_value = currentName;
-        if (!Popup::init(250.f, 130.f)) return false;
+        if (!Popup::init(240.f, 120.f)) return false;
         setTitle("RENAME STAFF", "goldFont.fnt", .55f, 20.f);
 
-        m_input = geode::TextInput::create(190.f, "STAFF NAME", "chatFont.fnt");
+        m_input = geode::TextInput::create(180.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({125.f, 65.f});
+        m_input->setPosition({120.f, 68.f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
@@ -3551,18 +3551,18 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({125.f, 38.f});
+                idButton->setPosition({120.f, 44.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 70, true, "bigFont.fnt", "GJ_button_04.png", 24.f, .50f);
-        auto* saveSpr = ButtonSprite::create("SAVE", 70, true, "bigFont.fnt", "GJ_button_01.png", 24.f, .50f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 60, true, "bigFont.fnt", "GJ_button_04.png", 21.f, .48f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 60, true, "bigFont.fnt", "GJ_button_01.png", 21.f, .48f);
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({83.f, 17.f});
-        saveBtn->setPosition({167.f, 17.f});
+        cancelBtn->setPosition({65.f, 16.f});
+        saveBtn->setPosition({175.f, 16.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
@@ -3930,7 +3930,7 @@ protected:
             // GJ_sModIcon_001 has transparent/oversized frame bounds, so moving its
             // center too close to the top edge can make the sprite appear clipped.
             float halfH = icon->getContentSize().height * icon->getScaleY() * .5f;
-            float iconY = y - 9.f;
+            float iconY = y - (group.status == "sent_to" ? 6.f : 9.f);
             if (auto* layer = static_cast<CCLayer*>(parent)) {
                 auto contentH = layer->getContentSize().height;
                 iconY = std::min(iconY, contentH - halfH - 7.f);
@@ -4242,13 +4242,13 @@ protected:
                 label->setAnchorPoint({0.f, 0.5f});
                 label->setPosition({requesterX, requesterY});
                 m_mainLayer->addChild(label, 3);
-                requesterX += label->getContentSize().width * label->getScale() + 7.f;
+                requesterX += label->getContentSize().width * label->getScale() + 6.f;
             }
 
             auto* tag = CCLabelBMFont::create(meta.requesterTag.c_str(), "goldFont.fnt");
             if (tag) {
                 // Match the requester nickname to the REQUESTED BY label.
-                tag->setScale(.34f);
+                tag->setScale(.42f);
                 tag->setAnchorPoint({0.f, 0.5f});
                 // Linked requester = native GD profile link (blue).
                 // Unlinked requester = plain Sheet nickname, already prefixed by the bridge.
@@ -4274,12 +4274,12 @@ protected:
                             button->setSizeMult(1.f);
                             button->setTag(static_cast<int>(m_actorLinks.size()));
                             m_actorLinks.push_back(meta.requesterURL);
-                            button->setPosition({requesterX + tagWidth * .5f, requesterY + .5f});
+                            button->setPosition({requesterX + tagWidth * .5f, requesterY + .4f});
                             m_buttonMenu->addChild(button, 20);
                         }
                     }
                 } else {
-                    tag->setPosition({requesterX, requesterY + .5f});
+                    tag->setPosition({requesterX, requesterY + .4f});
                     m_mainLayer->addChild(tag, 3);
                 }
             }
