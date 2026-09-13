@@ -3534,7 +3534,7 @@ protected:
 
         m_input = geode::TextInput::create(180.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({120.f, 68.f});
+        m_input->setPosition({120.f, 73.f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
@@ -3551,18 +3551,18 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({120.f, 44.f});
+                idButton->setPosition({120.f, 49.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 60, true, "bigFont.fnt", "GJ_button_04.png", 21.f, .48f);
-        auto* saveSpr = ButtonSprite::create("SAVE", 60, true, "bigFont.fnt", "GJ_button_01.png", 21.f, .48f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 54, true, "bigFont.fnt", "GJ_button_04.png", 20.f, .45f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 54, true, "bigFont.fnt", "GJ_button_01.png", 20.f, .45f);
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({65.f, 16.f});
-        saveBtn->setPosition({175.f, 16.f});
+        cancelBtn->setPosition({72.f, 20.f});
+        saveBtn->setPosition({168.f, 20.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
