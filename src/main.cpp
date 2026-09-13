@@ -3489,6 +3489,12 @@ protected:
 
     void onCancel(CCObject*) { this->onClose(nullptr); }
 
+    void onCopyDiscordID(CCObject*) {
+        if (!copyTextToClipboard(m_staffDiscordID)) {
+            FLAlertLayer::create("GD Requests", "Could not copy Discord ID to clipboard.", "OK")->show();
+        }
+    }
+
     void onSave(CCObject*) {
         auto key = Mod::get()->getSettingValue<std::string>("connection-key");
         if (key.empty()) {
@@ -3530,14 +3536,6 @@ protected:
         if (!Popup::init(300.f, 170.f)) return false;
         setTitle("RENAME STAFF", "goldFont.fnt", .58f, 20.f);
 
-        auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "chatFont.fnt");
-        if (idLabel) {
-            idLabel->setScale(.32f);
-            idLabel->setAnchorPoint({0.5f, 0.5f});
-            idLabel->setPosition({150.f, 115.f});
-            m_mainLayer->addChild(idLabel, 2);
-        }
-
         m_input = geode::TextInput::create(235.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
         m_input->setPosition({150.f, 78.f});
@@ -3546,6 +3544,21 @@ protected:
         m_input->setString(gd::string(m_value.c_str()), false);
         m_input->setCallback([this](std::string const& value) { m_value = value; });
         m_mainLayer->addChild(m_input, 2);
+
+        auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "chatFont.fnt");
+        if (idLabel) {
+            idLabel->setScale(.32f);
+            idLabel->setAnchorPoint({0.5f, 0.5f});
+            auto* idButton = CCMenuItemSpriteExtra::create(
+                idLabel, this, menu_selector(StaffRenamePopup::onCopyDiscordID)
+            );
+            if (idButton) {
+                idButton->m_animationEnabled = false;
+                idButton->setSizeMult(1.f);
+                idButton->setPosition({150.f, 50.f});
+                m_buttonMenu->addChild(idButton, 2);
+            }
+        }
 
         auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .55f);
         auto* saveSpr = ButtonSprite::create("SAVE", 80, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .55f);
@@ -3840,10 +3853,12 @@ protected:
             else if (actor.type == "already_seen") frameName = "GJ_updateBtn_001.png";
             else if (actor.type == "wrong_id") frameName = "GJ_deleteServerBtn_001.png";
             else if (actor.type == "report") frameName = "GJ_reportBtn_001.png";
-            if (frameName) sprite = CCSprite::createWithSpriteFrameName(frameName);
-            else if (actor.type == "plain_rejected") {
+            if (frameName) {
+                sprite = CCSprite::createWithSpriteFrameName(frameName);
+            } else if (actor.type == "plain_rejected") {
                 auto path = (Mod::get()->getResourcesDir() / "request-rejected.png").string();
-                sprite = CCSprite::create(path.c_str());
+                auto* texture = CCTextureCache::sharedTextureCache()->addImage(path.c_str(), false);
+                if (texture) sprite = CCSprite::createWithTexture(texture);
             }
         } else if (actor.status == "sent_to") {
             sprite = CCSprite::createWithSpriteFrameName("GJ_sModIcon_001.png");
@@ -3852,11 +3867,13 @@ protected:
         }
         if (!sprite) return nullptr;
 
-        float scale = targetVisualHeight / 128.f;
-        if (actor.status == "sent" && actor.type == "star_rate") scale = targetVisualHeight / 92.f;
-        else if (actor.status == "sent" && actor.type == "featured") scale = targetVisualHeight / 123.f;
-        else if (actor.status == "sent" && actor.type == "mythic") scale = targetVisualHeight / 127.f;
-        sprite->setScale(scale);
+        // Normalize every icon from its actual loaded dimensions. Different GD
+        // sprites and the custom rejection PNG have different source sizes, so
+        // fixed divisors make them appear at inconsistent visual sizes.
+        auto size = sprite->getContentSize();
+        if (size.height > 0.f) {
+            sprite->setScale(targetVisualHeight / size.height);
+        }
         sprite->setAnchorPoint({0.5f, 0.5f});
         return sprite;
     }
@@ -4090,7 +4107,9 @@ protected:
 
         // Metadata rows are laid out from the rows that are actually present.
         // Do not reserve a row for a disabled/missing REVIEW or FEEDBACK field.
-        float y = contentH - CONTENT_PADDING;
+        // CONTENT_PADDING is only for scroll bounds; it should not push the
+        // visible metadata rows down. Keep the original top position.
+        float y = contentH - 10.f;
         for (std::size_t i = 0; i < infoLines.size(); ++i) {
             addInfoLine(scroll->m_contentLayer, infoLines[i].first, infoLines[i].second, y);
             y -= INFO_LINE_STEP;
@@ -4210,7 +4229,8 @@ protected:
 
             auto* tag = CCLabelBMFont::create(meta.requesterTag.c_str(), "goldFont.fnt");
             if (tag) {
-                tag->setScale(.42f);
+                // Match the requester nickname to the REQUESTED BY label.
+                tag->setScale(.34f);
                 tag->setAnchorPoint({0.f, 0.5f});
                 // Linked requester = native GD profile link (blue).
                 // Unlinked requester = plain Sheet nickname, already prefixed by the bridge.
