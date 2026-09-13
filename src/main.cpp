@@ -3620,12 +3620,36 @@ public:
 
 class $modify(GDRequestsStaffRenameCursor, CCTextInputNode) {
 public:
+    void onClickTrackNode(bool selected) {
+        CCTextInputNode::onClickTrackNode(selected);
+        if (this != g_staffRenameInputNode) return;
+
+        if (selected && g_staffRenamePlaceholder) {
+            g_staffRenamePlaceholder->setVisible(false);
+        }
+
+        // When the field is empty, put the caret at the same center position
+        // that it has immediately after opening the field.
+        if (selected && getString().empty() && m_cursor) {
+            m_cursor->setPositionX(getContentSize().width * .5f);
+        }
+    }
+
     void updateCursorPosition(CCPoint position, CCRect rect) {
         CCTextInputNode::updateCursorPosition(position, rect);
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
         m_cursor->setScale(.65f);
-        m_cursor->setPositionY(m_cursor->getPositionY() + 2.5f);
+
+        // GD draws the native caret and CCTextInputNode's BMFont caret at
+        // slightly different heights. The old +2.5f put our caret above the
+        // native one. Put it halfway between the two instead. Because the
+        // base implementation is called first, this offset never accumulates.
+        m_cursor->setPositionY(m_cursor->getPositionY() + 1.25f);
+
+        if (getString().empty()) {
+            m_cursor->setPositionX(getContentSize().width * .5f);
+        }
     }
 };
 
