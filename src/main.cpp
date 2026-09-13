@@ -3481,11 +3481,29 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     }
 };
 
+static CCTextInputNode* g_staffRenameInputNode = nullptr;
+
 class StaffRenamePopup final : public geode::Popup {
 protected:
     std::string m_staffDiscordID;
     std::string m_value;
     geode::TextInput* m_input = nullptr;
+
+    ~StaffRenamePopup() override {
+        if (g_staffRenameInputNode && (!m_input || g_staffRenameInputNode == m_input->getInputNode())) {
+            g_staffRenameInputNode = nullptr;
+        }
+    }
+
+    void blinkStaffCursor(float) {
+        auto* node = m_input ? m_input->getInputNode() : nullptr;
+        if (!node || !node->m_cursor) return;
+        if (!node->m_selected) {
+            node->m_cursor->setVisible(false);
+            return;
+        }
+        node->m_cursor->setVisible(!node->m_cursor->isVisible());
+    }
 
     void onCancel(CCObject*) { this->onClose(nullptr); }
 
@@ -3534,12 +3552,21 @@ protected:
 
         m_input = geode::TextInput::create(180.f, "STAFF NAME", "chatFont.fnt");
         if (!m_input) return false;
-        m_input->setPosition({120.f, 63.5f});
+        m_input->setPosition({120.f, 60.5f});
         m_input->setCommonFilter(geode::CommonFilter::Any);
         m_input->setMaxCharCount(32);
         m_input->setString(gd::string(m_value.c_str()), false);
         m_input->setCallback([this](std::string const& value) { m_value = value; });
         m_mainLayer->addChild(m_input, 2);
+
+        g_staffRenameInputNode = m_input->getInputNode();
+        if (g_staffRenameInputNode) {
+            if (g_staffRenameInputNode->m_cursor) {
+                g_staffRenameInputNode->m_cursor->setScale(.65f);
+                g_staffRenameInputNode->m_cursor->setVisible(false);
+            }
+            this->schedule(schedule_selector(StaffRenamePopup::blinkStaffCursor), .5f);
+        }
 
         auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "goldFont.fnt");
         if (idLabel) {
@@ -3551,18 +3578,18 @@ protected:
             if (idButton) {
                 idButton->m_animationEnabled = false;
                 idButton->setSizeMult(1.f);
-                idButton->setPosition({120.f, 44.f});
+                idButton->setPosition({120.f, 41.f});
                 m_buttonMenu->addChild(idButton, 2);
             }
         }
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 54, true, "bigFont.fnt", "GJ_button_04.png", 20.f, .45f);
-        auto* saveSpr = ButtonSprite::create("SAVE", 54, true, "bigFont.fnt", "GJ_button_01.png", 20.f, .45f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 65, true, "bigFont.fnt", "GJ_button_04.png", 20.f, .45f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 65, true, "bigFont.fnt", "GJ_button_01.png", 20.f, .45f);
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({72.f, 25.f});
-        saveBtn->setPosition({168.f, 25.f});
+        cancelBtn->setPosition({72.f, 20.f});
+        saveBtn->setPosition({168.f, 20.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
@@ -3577,6 +3604,17 @@ public:
         }
         delete ret;
         return nullptr;
+    }
+};
+
+class $modify(GDRequestsStaffRenameCursor, CCTextInputNode) {
+public:
+    void updateCursorPosition(CCPoint position, CCRect rect) {
+        CCTextInputNode::updateCursorPosition(position, rect);
+        if (this != g_staffRenameInputNode || !m_cursor) return;
+
+        m_cursor->setScale(.65f);
+        m_cursor->setPositionY(m_cursor->getPositionY() + 1.5f);
     }
 };
 
