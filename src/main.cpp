@@ -3481,6 +3481,96 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     }
 };
 
+class StaffRenamePopup final : public geode::Popup {
+protected:
+    std::string m_staffDiscordID;
+    std::string m_value;
+    geode::TextInput* m_input = nullptr;
+
+    void onCancel(CCObject*) { this->onClose(nullptr); }
+
+    void onSave(CCObject*) {
+        auto key = Mod::get()->getSettingValue<std::string>("connection-key");
+        if (key.empty()) {
+            FLAlertLayer::create("GD Requests", "Connection Key is empty.", "OK")->show();
+            return;
+        }
+        auto value = trim(m_value);
+        if (value.empty()) {
+            FLAlertLayer::create("GD Requests", "Staff name cannot be empty.", "OK")->show();
+            return;
+        }
+        if (value.size() > 32) value.resize(32);
+
+        auto body = matjson::Value();
+        body["staffDiscordID"] = m_staffDiscordID;
+        body["staffName"] = value;
+        auto req = web::WebRequest();
+        req.header("Content-Type", "application/json");
+        req.header("Authorization", "Bearer " + key);
+        req.bodyJSON(body);
+        req.timeout(std::chrono::seconds(10));
+        this->retain();
+        async::spawn(req.post(apiBase() + "/staff-name"), [this](web::WebResponse res) {
+            auto text = res.string().unwrapOr("");
+            geode::queueInMainThread([this, res, text = std::move(text)]() mutable {
+                if (!res.ok()) {
+                    FLAlertLayer::create("GD Requests", ("Could not save staff name.\n\nHTTP " + std::to_string(res.code()) + (text.empty() ? "" : "\n" + text)).c_str(), "OK")->show();
+                } else {
+                    this->onClose(nullptr);
+                }
+                this->release();
+            });
+        });
+    }
+
+    bool initFor(std::string const& staffDiscordID, std::string const& currentName) {
+        m_staffDiscordID = staffDiscordID;
+        m_value = currentName;
+        if (!Popup::init(300.f, 170.f)) return false;
+        setTitle("RENAME STAFF", "goldFont.fnt", .58f, 20.f);
+
+        auto* idLabel = CCLabelBMFont::create(("Discord ID: " + m_staffDiscordID).c_str(), "chatFont.fnt");
+        if (idLabel) {
+            idLabel->setScale(.32f);
+            idLabel->setAnchorPoint({0.5f, 0.5f});
+            idLabel->setPosition({150.f, 115.f});
+            m_mainLayer->addChild(idLabel, 2);
+        }
+
+        m_input = geode::TextInput::create(235.f, "STAFF NAME", "chatFont.fnt");
+        if (!m_input) return false;
+        m_input->setPosition({150.f, 78.f});
+        m_input->setCommonFilter(geode::CommonFilter::Any);
+        m_input->setMaxCharCount(32);
+        m_input->setString(gd::string(m_value.c_str()), false);
+        m_input->setCallback([this](std::string const& value) { m_value = value; });
+        m_mainLayer->addChild(m_input, 2);
+
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 80, true, "bigFont.fnt", "GJ_button_04.png", 28.f, .55f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 80, true, "bigFont.fnt", "GJ_button_01.png", 28.f, .55f);
+        if (!cancelSpr || !saveSpr) return false;
+        auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
+        auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
+        cancelBtn->setPosition({98.f, 28.f});
+        saveBtn->setPosition({202.f, 28.f});
+        m_buttonMenu->addChild(cancelBtn);
+        m_buttonMenu->addChild(saveBtn);
+        return true;
+    }
+
+public:
+    static StaffRenamePopup* create(std::string const& staffDiscordID, std::string const& currentName) {
+        auto* ret = new StaffRenamePopup();
+        if (ret && ret->initFor(staffDiscordID, currentName)) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+};
+
 class RequestInfoPopup final : public geode::Popup {
 protected:
     RequestMeta m_meta;
@@ -3695,6 +3785,16 @@ protected:
 
         // Native Geometry Dash profile target. The bridge sends linked users as
         // gdprofile://<account-id>, so no browser/GDBrowser is involved.
+        constexpr std::string_view renamePrefix = "staffrename://";
+        if (target.starts_with(renamePrefix)) {
+            auto staffID = std::string(target.substr(renamePrefix.size()));
+            if (!staffID.empty() && staffID.find_first_not_of("0123456789") == std::string::npos) {
+                auto* popup = StaffRenamePopup::create(staffID, "");
+                if (popup) popup->show();
+            }
+            return;
+        }
+
         constexpr std::string_view prefix = "gdprofile://";
         if (target.starts_with(prefix)) {
             auto accountID = parseInt(std::string(target.substr(prefix.size())));
@@ -3720,12 +3820,13 @@ protected:
         if (type == "already_seen") return "Already Seen";
         if (type == "wrong_id") return "Wrong ID";
         if (type == "report") return "Report";
+        if (type == "plain_rejected") return "Rejected";
         return type.empty() ? "" : type;
     }
 
     static CCSprite* makeActorIcon(RequestActor const& actor) {
         // All actor/rejection icons are native Geometry Dash sprites.
-        constexpr float targetVisualHeight = 26.f;
+        constexpr float targetVisualHeight = 20.f;
         CCSprite* sprite = nullptr;
         if (actor.status == "sent") {
             if (actor.type == "undefined") {
@@ -3751,9 +3852,10 @@ protected:
         }
         if (!sprite) return nullptr;
 
-        auto size = sprite->getContentSize();
-        float maxSize = std::max(size.width, size.height);
-        float scale = maxSize > 0.f ? targetVisualHeight / maxSize : 1.f;
+        float scale = targetVisualHeight / 128.f;
+        if (actor.status == "sent" && actor.type == "star_rate") scale = targetVisualHeight / 92.f;
+        else if (actor.status == "sent" && actor.type == "featured") scale = targetVisualHeight / 123.f;
+        else if (actor.status == "sent" && actor.type == "mythic") scale = targetVisualHeight / 127.f;
         sprite->setScale(scale);
         sprite->setAnchorPoint({0.5f, 0.5f});
         return sprite;
@@ -3779,7 +3881,7 @@ protected:
         groups.push_back({actor.status, actor.type, {actor}});
     }
 
-    static float actorRowHeight() { return 28.f; }
+    static float actorRowHeight() { return 24.f; }
 
     static std::vector<ActorGroup> groupActors(std::vector<RequestActor> const& actors) {
         std::vector<ActorGroup> groups;
@@ -3806,7 +3908,7 @@ protected:
             // The icon is intentionally kept inside the scroll content bounds.
             // A little horizontal inset also prevents its transparent edges from
             // making it look detached from the text.
-            icon->setPosition({15.f, y - 9.f});
+            icon->setPosition({18.f, y - 9.f});
             parent->addChild(icon, 3);
         }
 
@@ -3957,10 +4059,7 @@ protected:
         if (!meta.sentTo.empty()) required += 5.f + sentToSectionHeight(meta.sentTo);
         if (!meta.reviewers.empty()) required += 5.f + actorSectionHeight(meta.reviewers);
         if (infoLines.empty() && descriptionLines.empty() && meta.helpers.empty() && meta.moderators.empty() && meta.sentTo.empty() && meta.reviewers.empty()) required += 24.f;
-        // Keep enough top/bottom padding for the largest actor icon. Without this,
-        // an icon near the edge of the clipped content layer can disappear while
-        // the text is still visible during scrolling.
-        constexpr float CONTENT_PADDING = 20.f;
+        constexpr float CONTENT_PADDING = 30.f;
         required += CONTENT_PADDING;
         float contentH = std::max(SCROLL_H, required);
 
