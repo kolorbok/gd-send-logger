@@ -3661,10 +3661,12 @@ public:
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
         }
-        if (selected && m_cursor && getString().empty()) {
-            // CCTextInputNode can initially place the caret at the right edge when
-            // an empty field receives focus. Keep an empty Rename Staff field centered.
-            m_cursor->setPositionX(getContentSize().width * .5f);
+        if (selected && m_cursor) {
+            // The native input can overwrite the caret position immediately after
+            // focus. Force an empty Rename Staff field back to the visual center.
+            if (getString().empty()) {
+                m_cursor->setPositionX(getContentSize().width * .5f);
+            }
         }
     }
 
@@ -3673,8 +3675,8 @@ public:
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
         m_cursor->setScale(.65f);
-        m_cursor->setPositionY(m_cursor->getPositionY() + 1.5f);
-        if (m_selected && getString().empty()) {
+        m_cursor->setPositionY(m_cursor->getPositionY() + 3.5f);
+        if (getString().empty()) {
             m_cursor->setPositionX(getContentSize().width * .5f);
         }
     }
