@@ -19,6 +19,7 @@
 #include <Geode/utils/async.hpp>
 #include <Geode/utils/NodeIDs.hpp>
 #include <Geode/utils/Keyboard.hpp>
+#include <Geode/utils/general.hpp>
 #include <unordered_map>
 #include <atomic>
 #include <memory>
@@ -80,45 +81,9 @@ static std::string windowsKeyboardText(geode::KeyboardInputData const& data) {
 }
 
 static bool copyTextToClipboard(std::string const& text) {
-#if defined(GEODE_IS_WINDOWS)
-    if (!OpenClipboard(nullptr)) return false;
-    EmptyClipboard();
-
-    int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (length <= 0) {
-        CloseClipboard();
-        return false;
-    }
-
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(wchar_t) * length);
-    if (!memory) {
-        CloseClipboard();
-        return false;
-    }
-
-    auto buffer = static_cast<wchar_t*>(GlobalLock(memory));
-    if (!buffer) {
-        GlobalFree(memory);
-        CloseClipboard();
-        return false;
-    }
-
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, buffer, length);
-    GlobalUnlock(memory);
-
-    if (!SetClipboardData(CF_UNICODETEXT, memory)) {
-        GlobalFree(memory);
-        CloseClipboard();
-        return false;
-    }
-
-    CloseClipboard();
-    return true;
-#else
-    (void)text;
-    return false;
-#endif
+    return geode::utils::clipboard::write(text);
 }
+
 
 static std::string getTextFromClipboard() {
 #if defined(GEODE_IS_WINDOWS)
@@ -3661,13 +3626,6 @@ public:
         if (selected && g_staffRenamePlaceholder) {
             g_staffRenamePlaceholder->setVisible(false);
         }
-        if (selected && m_cursor) {
-            // The native input can overwrite the caret position immediately after
-            // focus. Force an empty Rename Staff field back to the visual center.
-            if (getString().empty()) {
-                m_cursor->setPositionX(getContentSize().width * .5f);
-            }
-        }
     }
 
     void updateCursorPosition(CCPoint position, CCRect rect) {
@@ -3675,8 +3633,8 @@ public:
         if (this != g_staffRenameInputNode || !m_cursor) return;
 
         m_cursor->setScale(.65f);
-        m_cursor->setPositionY(m_cursor->getPositionY() + 3.5f);
-        if (getString().empty()) {
+        m_cursor->setPositionY(m_cursor->getPositionY() + 2.5f);
+        if (m_selected && getString().empty()) {
             m_cursor->setPositionX(getContentSize().width * .5f);
         }
     }
