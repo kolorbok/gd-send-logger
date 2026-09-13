@@ -3537,7 +3537,13 @@ protected:
                 if (!res.ok()) {
                     FLAlertLayer::create("GD Requests", ("Could not save staff name.\n\nHTTP " + std::to_string(res.code()) + (text.empty() ? "" : "\n" + text)).c_str(), "OK")->show();
                 } else {
+                    auto* success = FLAlertLayer::create(
+                        "GD Requests",
+                        "Staff nickname saved successfully.",
+                        "OK"
+                    );
                     this->onClose(nullptr);
+                    success->show();
                 }
                 this->release();
             });
@@ -3583,13 +3589,13 @@ protected:
             }
         }
 
-        auto* cancelSpr = ButtonSprite::create("CANCEL", 65, true, "bigFont.fnt", "GJ_button_04.png", 20.f, .45f);
-        auto* saveSpr = ButtonSprite::create("SAVE", 65, true, "bigFont.fnt", "GJ_button_01.png", 20.f, .45f);
+        auto* cancelSpr = ButtonSprite::create("CANCEL", 65, true, "bigFont.fnt", "GJ_button_04.png", 24.f, .45f);
+        auto* saveSpr = ButtonSprite::create("SAVE", 65, true, "bigFont.fnt", "GJ_button_01.png", 24.f, .45f);
         if (!cancelSpr || !saveSpr) return false;
         auto* cancelBtn = CCMenuItemSpriteExtra::create(cancelSpr, this, menu_selector(StaffRenamePopup::onCancel));
         auto* saveBtn = CCMenuItemSpriteExtra::create(saveSpr, this, menu_selector(StaffRenamePopup::onSave));
-        cancelBtn->setPosition({72.f, 20.f});
-        saveBtn->setPosition({168.f, 20.f});
+        cancelBtn->setPosition({72.f, 21.f});
+        saveBtn->setPosition({168.f, 21.f});
         m_buttonMenu->addChild(cancelBtn);
         m_buttonMenu->addChild(saveBtn);
         return true;
