@@ -947,18 +947,39 @@ static CCArray* buildRequestDisplayLevels(CCArray* levels) {
         }
     }
 
-    // Rebuild the exact request order. A request whose GD level no longer exists
-    // receives a synthetic GJGameLevel, so the native LevelCell still gets one
-    // card and our request actions remain attached to that card.
-    for (auto const& meta : g_requestList) {
-        if (meta.event != "0" || meta.levelID <= 0) continue;
-        auto it = found.find(meta.levelID);
+    // Only rebuild the IDs belonging to the currently requested 10-level batch.
+    // The server/GD response is scoped to that batch; walking the whole request list
+    // here would turn later pages into synthetic "missing" levels and put every page
+    // into one native browser result.
+    auto ids = requestLevelIDs();
+    auto begin = g_requestNativeBatch * REQUEST_NATIVE_BATCH_SIZE;
+    if (begin >= ids.size()) return ordered;
+    auto end = std::min(ids.size(), begin + REQUEST_NATIVE_BATCH_SIZE);
+
+    std::unordered_map<int, RequestMeta> metaByID;
+    for (std::size_t i = begin; i < end; ++i) {
+        auto it = g_requestByLevel.find(ids[i]);
+        if (it != g_requestByLevel.end()) metaByID.emplace(ids[i], it->second);
+    }
+
+    // Preserve the request order inside this page. Existing GD levels stay native;
+    // only IDs absent from the GD response get a synthetic level.
+    for (std::size_t i = begin; i < end; ++i) {
+        auto const levelID = ids[i];
+        auto it = found.find(levelID);
         if (it != found.end()) {
             ordered->addObject(it->second);
-        } else if (auto* missing = makeMissingRequestLevel(meta)) {
-            ordered->addObject(missing);
+            continue;
+        }
+
+        auto metaIt = metaByID.find(levelID);
+        if (metaIt != metaByID.end()) {
+            if (auto* missing = makeMissingRequestLevel(metaIt->second)) {
+                ordered->addObject(missing);
+            }
         }
     }
+
     return ordered;
 }
 
