@@ -178,6 +178,8 @@ struct RequestMeta {
     bool platformer = false;
     std::string requesterTag;
     std::string requesterURL;
+    std::string levelName;
+    std::string levelCreator;
     std::vector<RequestActor> helpers;
     std::vector<RequestActor> moderators;
     std::vector<RequestActor> reviewers;
@@ -838,6 +840,9 @@ static bool parseRequestsResponse(std::string const& text) {
             if (parts.size() >= 18) meta.sentTo = parseRequestActors(unescapeRequestField(parts[17]));
             if (parts.size() >= 19) meta.reviewers = parseRequestActors(unescapeRequestField(parts[18]));
             if (parts.size() >= 20) meta.sentToEnabled = parseInt(parts[19]) != 0;
+            // Optional fields appended after the actor metadata so older bridges remain compatible.
+            if (parts.size() >= 21) meta.levelName = unescapeRequestField(parts[20]);
+            if (parts.size() >= 22) meta.levelCreator = unescapeRequestField(parts[21]);
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
@@ -896,6 +901,65 @@ static std::string requestNativeBatchCSV(std::size_t batch) {
         out += std::to_string(ids[i]);
     }
     return out;
+}
+
+static GJGameLevel* makeMissingRequestLevel(RequestMeta const& meta) {
+    auto* level = GJGameLevel::create();
+    if (!level) return nullptr;
+
+    level->m_levelID = meta.levelID;
+    level->m_levelName = gd::string((meta.levelName.empty() ? ("Level " + std::to_string(meta.levelID)) : meta.levelName).c_str());
+    level->m_creatorName = gd::string((meta.levelCreator.empty() ? "Unknown Creator" : meta.levelCreator).c_str());
+    level->m_levelDesc = gd::string(meta.description.c_str());
+    level->m_levelType = GJLevelType::Saved;
+    level->m_levelString = "";
+    level->m_isUploaded = false;
+    level->m_isVerifiedRaw = false;
+    level->m_isEditable = false;
+    level->m_featured = 0;
+    level->m_isEpic = 0;
+    level->m_coins = 0;
+    level->m_coinsVerified = 0;
+    level->m_downloads = 0;
+    level->m_likes = 0;
+    level->m_dislikes = 0;
+    level->m_stars = std::max(0, meta.difficulty);
+    level->m_demon = meta.difficulty == 10 ? 1 : 0;
+    level->m_demonDifficulty = 0;
+    level->m_levelLength = 0;
+    level->m_platformerSeed = (meta.hasPlatformer && meta.platformer) ? 1 : 0;
+
+    // Mark it so our LevelInfo hook can still use the request context, while the
+    // native LevelCell keeps rendering from an ordinary GJGameLevel object.
+    return level;
+}
+
+static CCArray* buildRequestDisplayLevels(CCArray* levels) {
+    auto* ordered = CCArray::create();
+    if (!ordered) return nullptr;
+
+    std::unordered_map<int, GJGameLevel*> found;
+    if (levels) {
+        for (unsigned int i = 0; i < levels->count(); ++i) {
+            auto* level = typeinfo_cast<GJGameLevel*>(levels->objectAtIndex(i));
+            if (!level) continue;
+            found.emplace(level->m_levelID, level);
+        }
+    }
+
+    // Rebuild the exact request order. A request whose GD level no longer exists
+    // receives a synthetic GJGameLevel, so the native LevelCell still gets one
+    // card and our request actions remain attached to that card.
+    for (auto const& meta : g_requestList) {
+        if (meta.event != "0" || meta.levelID <= 0) continue;
+        auto it = found.find(meta.levelID);
+        if (it != found.end()) {
+            ordered->addObject(it->second);
+        } else if (auto* missing = makeMissingRequestLevel(meta)) {
+            ordered->addObject(missing);
+        }
+    }
+    return ordered;
 }
 
 static GJSearchObject* makeRequestNativeBatchSearch(std::size_t batch) {
@@ -3380,7 +3444,12 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
     }
 
     void loadLevelsFinished(CCArray* levels, char const* key, int type) override {
-        LevelBrowserLayer::loadLevelsFinished(levels, key, type);
+        if (isThisRequestBrowser()) {
+            auto* displayLevels = buildRequestDisplayLevels(levels);
+            LevelBrowserLayer::loadLevelsFinished(displayLevels ? displayLevels : levels, key, type);
+        } else {
+            LevelBrowserLayer::loadLevelsFinished(levels, key, type);
+        }
         if (isThisRequestBrowser()) {
             refreshRequestBatchArrows();
             refreshRequestPageLabels();
