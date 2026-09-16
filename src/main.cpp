@@ -7,6 +7,7 @@
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/LevelCell.hpp>
 #include <Geode/binding/GameLevelManager.hpp>
+#include <Geode/binding/GJAccountManager.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/GJSearchObject.hpp>
 #include <Geode/binding/ProfilePage.hpp>
@@ -504,6 +505,15 @@ static std::string loggerConnectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("logger-key"));
 }
 
+static int gdAccountID() {
+    auto* account = GJAccountManager::sharedState();
+    return account ? account->m_accountID : 0;
+}
+
+static std::string gdModVersion() {
+    return Mod::get()->getVersion().toString();
+}
+
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
     if (value.size() <= limit) return value;
     value.resize(limit);
@@ -628,6 +638,7 @@ static matjson::Value buildPayload(SendSnapshot const& snapshot, bool isTest, Re
     body["stars"] = snapshot.stars;
     body["featureState"] = snapshot.featureState;
     body["sendType"] = featureStateToSendType(snapshot.featureState);
+    body["gdAccountID"] = gdAccountID();
 
     if (!snapshot.levelName.empty()) body["levelName"] = snapshot.levelName;
     if (!snapshot.creator.empty()) body["creator"] = snapshot.creator;
@@ -669,6 +680,7 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
+    req.header("X-GD-Mod-Version", gdModVersion());
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
@@ -2816,6 +2828,7 @@ static void postRequestAction(
     auto req = web::WebRequest();
     req.header("Content-Type", "application/json");
     req.header("Authorization", "Bearer " + key);
+    req.header("X-GD-Mod-Version", gdModVersion());
     req.bodyJSON(body);
     req.timeout(std::chrono::seconds(15));
 
@@ -3151,6 +3164,7 @@ protected:
 
         auto req = web::WebRequest();
         req.header("Authorization", "Bearer " + key);
+        req.header("X-GD-Mod-Version", gdModVersion());
         req.timeout(std::chrono::seconds(30));
         auto url = requestURL();
 
@@ -3596,6 +3610,7 @@ protected:
         auto req = web::WebRequest();
         req.header("Content-Type", "application/json");
         req.header("Authorization", "Bearer " + key);
+        req.header("X-GD-Mod-Version", gdModVersion());
         req.bodyJSON(body);
         req.timeout(std::chrono::seconds(10));
         this->retain();
