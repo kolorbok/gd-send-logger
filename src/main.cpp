@@ -496,8 +496,12 @@ static bool debugLogging() {
     return Mod::get()->getSettingValue<bool>("debug-logging");
 }
 
-static std::string connectionKey() {
+static std::string requestConnectionKey() {
     return trim(Mod::get()->getSettingValue<std::string>("connection-key"));
+}
+
+static std::string loggerConnectionKey() {
+    return trim(Mod::get()->getSettingValue<std::string>("logger-key"));
 }
 
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
@@ -654,10 +658,10 @@ static void reportSend(SendSnapshot snapshot, bool isTest = false, RequestContex
         return;
     }
 
-    auto key = connectionKey();
+    auto key = loggerConnectionKey();
     if (key.empty()) {
-        log::warn("GD Requests is not configured. Fill Connection Key in mod settings.");
-        if (isTest) showAlert(MOD_NAME, "Test was not sent: Connection Key is empty.");
+        log::warn("GD Send Logger is not configured. Fill Logger Key in mod settings.");
+        if (isTest) showAlert(MOD_NAME, "Test was not sent: Logger Key is empty.");
         return;
     }
 
@@ -2785,7 +2789,7 @@ static void postRequestAction(
     bool submittedNoPing = false,
     int submittedRequestID = 0
 ) {
-    auto key = connectionKey();
+    auto key = requestConnectionKey();
     if (key.empty() || !context.active || context.request.requestID <= 0) return;
 
     auto state = showSubmitLoading(loadingHost, "Submitting...", std::move(restoreHostClose), std::move(resetNoPingVisual), submittedNoPing, submittedRequestID);
@@ -3126,9 +3130,9 @@ protected:
 
     void loadRequests() {
         if (m_loading) return;
-        auto key = connectionKey();
+        auto key = requestConnectionKey();
         if (key.empty()) {
-            setStatus("Connection Key is empty - use /geode-link in Discord");
+            setStatus("GD Requests Key is empty - use /geode-link in Discord");
             return;
         }
 
@@ -3577,10 +3581,10 @@ protected:
         if (m_saveInProgress) return;
         m_saveInProgress = true;
 
-        auto key = Mod::get()->getSettingValue<std::string>("connection-key");
+        auto key = requestConnectionKey();
         if (key.empty()) {
             m_saveInProgress = false;
-            FLAlertLayer::create("GD Requests", "Connection Key is empty.", "OK")->show();
+            FLAlertLayer::create("GD Requests", "GD Requests Key is empty.", "OK")->show();
             return;
         }
         auto value = trim(m_value);
