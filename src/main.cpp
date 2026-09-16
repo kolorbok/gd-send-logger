@@ -2811,6 +2811,7 @@ static void postRequestAction(
     auto body = matjson::Value();
     body["eventId"] = makeRequestActionEventID(context, action);
     body["requestId"] = context.request.requestID;
+    body["gdAccountID"] = gdAccountID();
     body["mode"] = context.mode;
     body["action"] = action;
     auto feedback = feedbackFor(context);
@@ -3180,11 +3181,36 @@ protected:
             }
 
             if (!res.ok()) {
-                self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
-                if (self->m_metaLabel) {
-                    self->m_metaLabel->setString(
-                        limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
-                    );
+                if (res.code() == 426) {
+                    self->setStatus("GEODE MOD UPDATE REQUIRED - HTTP 426");
+                    if (self->m_metaLabel) {
+                        auto message = text.empty() ?
+                            "This Geode mod version is outdated. Please update the mod." : text;
+                        // HTTP 426 is a version-gate response, not a normal API error.
+                        // Never expose the bridge's internal ERR token in the UI.
+                        if (message.rfind("ERR\\t", 0) == 0) {
+                            auto newline = message.find('\\n');
+                            if (newline != std::string::npos) {
+                                message = message.substr(newline + 1);
+                            } else {
+                                message = "This Geode mod version is outdated. Please update the mod.";
+                            }
+                        }
+                        if (message.rfind("geode_mod_outdated", 0) == 0) {
+                            auto newline = message.find('\\n');
+                            message = (newline == std::string::npos)
+                                ? "This Geode mod version is outdated. Please update the mod."
+                                : message.substr(newline + 1);
+                        }
+                        self->m_metaLabel->setString(limitPopupText(message, 120).c_str());
+                    }
+                } else {
+                    self->setStatus("Request server error - HTTP " + std::to_string(res.code()));
+                    if (self->m_metaLabel) {
+                        self->m_metaLabel->setString(
+                            limitPopupText(text.empty() ? "No response body" : text, 120).c_str()
+                        );
+                    }
                 }
                 self->refreshButtons();
                 self->release();
