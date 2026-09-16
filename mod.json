@@ -19,7 +19,13 @@
     },
     "connection-key": {
       "type": "string",
-      "name": "Connection Key",
+      "name": "GD Requests Key",
+      "default": "",
+      "filter": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    },
+    "logger-key": {
+      "type": "string",
+      "name": "GD Send Logger Key",
       "default": "",
       "filter": "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     },
