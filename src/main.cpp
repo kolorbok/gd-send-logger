@@ -940,8 +940,8 @@ static GJGameLevel* makeMissingRequestLevel(RequestMeta const& meta) {
     level->m_downloads = 0;
     level->m_likes = 0;
     level->m_dislikes = 0;
-    level->m_stars = std::max(0, meta.difficulty);
-    level->m_demon = meta.difficulty == 10 ? 1 : 0;
+    level->m_stars = 0;
+    level->m_demon = 0;
     level->m_demonDifficulty = 0;
     level->m_levelLength = 0;
     level->m_platformerSeed = (meta.hasPlatformer && meta.platformer) ? 1 : 0;
