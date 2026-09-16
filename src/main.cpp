@@ -511,7 +511,7 @@ static int gdAccountID() {
 }
 
 static std::string gdModVersion() {
-    return Mod::get()->getVersion().toString();
+    return Mod::get()->getVersion().toVString(true);
 }
 
 static std::string limitPopupText(std::string value, std::size_t limit = 700) {
