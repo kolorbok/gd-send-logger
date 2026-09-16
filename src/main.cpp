@@ -749,7 +749,8 @@ static std::string requestURL() {
         "&sendBy=" + joinCSV(g_filters.sendSources) +
         "&rated=all" +
         "&sort=newest" +
-        "&limit=50000";
+        "&limit=50000" +
+        "&gdAccountID=" + std::to_string(gdAccountID());
 }
 
 static std::string normalizeRequestDifficultyKey(std::string raw, int stars) {
