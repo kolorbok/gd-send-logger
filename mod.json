@@ -6,11 +6,11 @@
     "mac": "2.2081",
     "ios": "2.2081"
   },
-  "id": "kolorbok.gd-send-logger",
+  "id": "kolorbok.gd-requests",
   "name": "GD Requests",
-  "version": "v2.0.37",
+  "version": "v1.0.0",
   "developer": "kolorbok",
-  "description": "",
+  "description": "Connects Geometry Dash with GD Requests on Discord. View server requests, submit request results, and log Geometry Dash sends directly from the game.",
   "settings": {
     "enabled": {
       "type": "bool",
@@ -49,7 +49,8 @@
   },
   "resources": {
     "files": [
-      "resources/request-star.png"
+      "resources/request-star.png",
+      "resources/request-rejected.png"
     ]
   }
 }
