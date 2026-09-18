@@ -209,6 +209,9 @@ struct RequestContext {
 
 static std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_recentSends;
 static RequestFilters g_filters;
+// Keep Request Hub filters scoped to the Discord server returned by the connection key.
+// The same mod installation can be connected to multiple servers with different keys.
+static std::unordered_map<std::string, RequestFilters> g_filtersByServer;
 static ClientState g_client;
 static RequestContext g_context;
 static std::unordered_map<int, RequestMeta> g_requestByLevel;
@@ -824,8 +827,18 @@ static bool parseRequestsResponse(std::string const& text) {
         if (parts.empty()) continue;
         if (parts[0] == "ERR") return false;
         if (parts[0] == "META" && parts.size() >= 9) {
+            const auto previousServerID = g_client.serverID;
             g_client.mode = parts[1];
             g_client.serverID = parts[2];
+
+            // Filters belong to the Discord server, not to the connection key or the
+            // global mod process. When the key points to a different server, load that
+            // server's filters; a server seen for the first time gets clean defaults.
+            if (g_client.serverID != previousServerID) {
+                auto [it, inserted] = g_filtersByServer.try_emplace(g_client.serverID, RequestFilters{});
+                g_filters = it->second;
+            }
+
             g_client.userID = parts[3];
             g_client.moderator = parseInt(parts[4]) != 0;
             g_client.helper = parseInt(parts[5]) != 0;
@@ -2669,7 +2682,12 @@ protected:
     void feedbackPrev(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,-1);refresh();} void feedbackNext(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,1);refresh();}
     void sortPrev(CCObject*){cycleValue(m_working.sort,SORTS,-1);refresh();} void sortNext(CCObject*){cycleValue(m_working.sort,SORTS,1);refresh();}
     void onReset(CCObject*){m_working=RequestFilters{};if(!m_staff)m_working.status="all";refresh();}
-    void onApply(CCObject*){g_filters=m_working;onClose(nullptr);showAlert(MOD_NAME,"Filters saved. Tap Refresh in Server Requests to apply them.");}
+    void onApply(CCObject*){
+        g_filters=m_working;
+        if (!g_client.serverID.empty()) g_filtersByServer[g_client.serverID]=g_filters;
+        onClose(nullptr);
+        showAlert(MOD_NAME,"Filters saved. Tap Refresh in Server Requests to apply them.");
+    }
 public:
     static RequestFiltersPopup* create(){auto* ret=new RequestFiltersPopup();if(ret&&ret->initFor()){ret->autorelease();return ret;}delete ret;return nullptr;}
 };
