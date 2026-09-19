@@ -209,9 +209,6 @@ struct RequestContext {
 
 static std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_recentSends;
 static RequestFilters g_filters;
-// Keep Request Hub filters scoped to the Discord server returned by the connection key.
-// The same mod installation can be connected to multiple servers with different keys.
-static std::unordered_map<std::string, RequestFilters> g_filtersByServer;
 static ClientState g_client;
 static RequestContext g_context;
 static std::unordered_map<int, RequestMeta> g_requestByLevel;
@@ -493,6 +490,19 @@ static int parseInt(std::string const& value, int fallback = 0) {
         return std::stoi(value);
     } catch (...) {
         return fallback;
+    }
+}
+
+static bool isPositiveDecimal(std::string value) {
+    value = trim(value);
+    if (value.empty()) return false;
+    for (unsigned char c : value) {
+        if (c < '0' || c > '9') return false;
+    }
+    try {
+        return std::stoll(value) > 0;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -827,18 +837,8 @@ static bool parseRequestsResponse(std::string const& text) {
         if (parts.empty()) continue;
         if (parts[0] == "ERR") return false;
         if (parts[0] == "META" && parts.size() >= 9) {
-            const auto previousServerID = g_client.serverID;
             g_client.mode = parts[1];
             g_client.serverID = parts[2];
-
-            // Filters belong to the Discord server, not to the connection key or the
-            // global mod process. When the key points to a different server, load that
-            // server's filters; a server seen for the first time gets clean defaults.
-            if (g_client.serverID != previousServerID) {
-                auto [it, inserted] = g_filtersByServer.try_emplace(g_client.serverID, RequestFilters{});
-                g_filters = it->second;
-            }
-
             g_client.userID = parts[3];
             g_client.moderator = parseInt(parts[4]) != 0;
             g_client.helper = parseInt(parts[5]) != 0;
@@ -876,7 +876,11 @@ static bool parseRequestsResponse(std::string const& text) {
 
             if (!requestMetaMatchesLocalFilters(meta)) continue;
 
-            if (meta.requestID > 0 && meta.levelID > 0) {
+            // Keep the request in the server database even when its LevelID is a legacy
+            // non-numeric value, but never expose such IDs to the in-game browser.
+            // The bridge filters them out of META.total / returned REQ rows as well,
+            // keeping the pagination count synchronized with the actual numeric IDs.
+            if (meta.requestID > 0 && isPositiveDecimal(parts[2]) && meta.levelID > 0) {
                 g_requestList.push_back(meta);
             }
         }
@@ -941,6 +945,10 @@ static GJGameLevel* makeMissingRequestLevel(RequestMeta const& meta) {
     level->m_levelName = gd::string((meta.levelName.empty() ? ("Level " + std::to_string(meta.levelID)) : meta.levelName).c_str());
     level->m_creatorName = gd::string((meta.levelCreator.empty() ? "Unknown Creator" : meta.levelCreator).c_str());
     level->m_levelDesc = gd::string(meta.description.c_str());
+
+    // This is a synthetic request card for a numeric Level ID that
+    // no longer exists on GD. Keep it as Saved to preserve the existing card
+    // behaviour requested by the project.
     level->m_levelType = GJLevelType::Saved;
     level->m_levelString = "";
     level->m_isUploaded = false;
@@ -959,8 +967,6 @@ static GJGameLevel* makeMissingRequestLevel(RequestMeta const& meta) {
     level->m_levelLength = 0;
     level->m_platformerSeed = (meta.hasPlatformer && meta.platformer) ? 1 : 0;
 
-    // Mark it so our LevelInfo hook can still use the request context, while the
-    // native LevelCell keeps rendering from an ordinary GJGameLevel object.
     return level;
 }
 
@@ -977,10 +983,9 @@ static CCArray* buildRequestDisplayLevels(CCArray* levels) {
         }
     }
 
-    // Only rebuild the IDs belonging to the currently requested 10-level batch.
-    // The server/GD response is scoped to that batch; walking the whole request list
-    // here would turn later pages into synthetic "missing" levels and put every page
-    // into one native browser result.
+    // Only rebuild the IDs belonging to the currently requested 50-level request batch.
+    // Keep every numeric request in the page even when GD no longer has the level.
+    // Missing levels get a temporary display-only GJGameLevel and are never marked Saved.
     auto ids = requestLevelIDs();
     auto begin = g_requestNativeBatch * REQUEST_NATIVE_BATCH_SIZE;
     if (begin >= ids.size()) return ordered;
@@ -992,8 +997,6 @@ static CCArray* buildRequestDisplayLevels(CCArray* levels) {
         if (it != g_requestByLevel.end()) metaByID.emplace(ids[i], it->second);
     }
 
-    // Preserve the request order inside this page. Existing GD levels stay native;
-    // only IDs absent from the GD response get a synthetic level.
     for (std::size_t i = begin; i < end; ++i) {
         auto const levelID = ids[i];
         auto it = found.find(levelID);
@@ -2682,12 +2685,7 @@ protected:
     void feedbackPrev(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,-1);refresh();} void feedbackNext(CCObject*){cycleValue(m_working.feedbackNeeded,FEEDBACK_NEEDED,1);refresh();}
     void sortPrev(CCObject*){cycleValue(m_working.sort,SORTS,-1);refresh();} void sortNext(CCObject*){cycleValue(m_working.sort,SORTS,1);refresh();}
     void onReset(CCObject*){m_working=RequestFilters{};if(!m_staff)m_working.status="all";refresh();}
-    void onApply(CCObject*){
-        g_filters=m_working;
-        if (!g_client.serverID.empty()) g_filtersByServer[g_client.serverID]=g_filters;
-        onClose(nullptr);
-        showAlert(MOD_NAME,"Filters saved. Tap Refresh in Server Requests to apply them.");
-    }
+    void onApply(CCObject*){g_filters=m_working;onClose(nullptr);showAlert(MOD_NAME,"Filters saved. Tap Refresh in Server Requests to apply them.");}
 public:
     static RequestFiltersPopup* create(){auto* ret=new RequestFiltersPopup();if(ret&&ret->initFor()){ret->autorelease();return ret;}delete ret;return nullptr;}
 };
@@ -3016,7 +3014,7 @@ protected:
         auto* feedbackSpr = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
         feedbackSpr->setScale(.32f);
         auto* feedbackBtn = CCMenuItemSpriteExtra::create(feedbackSpr, this, menu_selector(RejectPopup::onFeedback));
-        feedbackBtn->setID("kolorbok.gd-send-logger/request-feedback-button");
+        feedbackBtn->setID("kolorbok.gd-requests/request-feedback-button");
         feedbackBtn->setSizeMult(1.f);
         feedbackBtn->setPosition({cancelBtn->getPositionX() - 78.f, cancelBtn->getPositionY()});
         m_buttonMenu->addChild(feedbackBtn);
@@ -3356,7 +3354,7 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
             log::error("[REQUESTS UI] other-filter-menu was not found");
             return;
         }
-        if (menu->getChildByID("kolorbok.gd-send-logger/requests-button")) return;
+        if (menu->getChildByID("kolorbok.gd-requests/requests-button")) return;
 
         // Kolorbot's custom Requests icon is intentionally used here; this is the entry point
         // into the request system, not the Already Rated action icon.
@@ -3405,7 +3403,7 @@ class $modify(GDRequestsLevelSearchLayer, LevelSearchLayer) {
             sprite, this, menu_selector(GDRequestsLevelSearchLayer::onRequests)
         );
         if (!button) return;
-        button->setID("kolorbok.gd-send-logger/requests-button");
+        button->setID("kolorbok.gd-requests/requests-button");
 
         // Give the custom item exactly the same layout / hitbox footprint as a vanilla button.
         // More importantly, do NOT call updateLayout after inserting it: the vanilla buttons
@@ -3453,12 +3451,28 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
         if (!isThisRequestBrowser()) return;
 
         // Server Requests owns the arrows completely: one arrow step is one
-        // 50-level request page. The native 10-level pagination is intentionally bypassed.
+        // 50-level request page. The native page state may report "no pages" when
+        // GD returns an empty result, so force visibility from our own request list.
         m_fields->nativeAtEnd = true;
         m_fields->nativeAtStart = true;
 
         if (m_rightArrow) m_rightArrow->setVisible(hasNextRequestNativeBatch());
         if (m_leftArrow) m_leftArrow->setVisible(hasPrevRequestNativeBatch());
+    }
+
+    void scheduleRequestArrowRefreshes(unsigned int remaining = 4) {
+        if (!isThisRequestBrowser()) return;
+        refreshRequestBatchArrows();
+        refreshRequestPageLabels();
+        if (remaining <= 1) return;
+
+        this->retain();
+        geode::queueInMainThread([self = this, remaining]() {
+            if (self->getParent() && self->isThisRequestBrowser()) {
+                self->scheduleRequestArrowRefreshes(remaining - 1);
+            }
+            self->release();
+        });
     }
 
     void loadRequestNativeBatch(std::size_t batch) {
@@ -3535,16 +3549,9 @@ class $modify(GDRequestsLevelBrowserLayer, LevelBrowserLayer) {
             LevelBrowserLayer::loadLevelsFinished(levels, key, type);
         }
         if (isThisRequestBrowser()) {
-            refreshRequestBatchArrows();
-            refreshRequestPageLabels();
-            this->retain();
-            geode::queueInMainThread([self = this]() {
-                if (self->getParent() && self->isThisRequestBrowser()) {
-                    self->refreshRequestBatchArrows();
-                    self->refreshRequestPageLabels();
-                }
-                self->release();
-            });
+            // GD may hide the arrows again after processing an empty result.
+            // Re-apply our own request pagination state for several main-thread ticks.
+            scheduleRequestArrowRefreshes();
         }
     }
 
@@ -4333,7 +4340,7 @@ protected:
 
         auto* scroll = geode::ScrollLayer::create(CCSize(SCROLL_W, SCROLL_H), true, true);
         if (!scroll) return false;
-        scroll->setID("kolorbok.gd-send-logger/request-info-scroll");
+        scroll->setID("kolorbok.gd-requests/request-info-scroll");
         scroll->setPosition({SCROLL_X, SCROLL_Y});
         scroll->setStealingTouches(false);
         scroll->m_contentLayer->setContentSize({SCROLL_W, contentH});
@@ -4351,7 +4358,7 @@ protected:
                 difficultyTile->setScale(.70f);
                 difficultyTile->setAnchorPoint({1.f, 1.f});
                 difficultyTile->setPosition({SCROLL_W - 7.f, contentH - 11.f});
-                difficultyTile->setID("kolorbok.gd-send-logger/request-info-difficulty");
+                difficultyTile->setID("kolorbok.gd-requests/request-info-difficulty");
                 scroll->m_contentLayer->addChild(difficultyTile, 3);
             }
         }
@@ -4554,15 +4561,15 @@ class $modify(GDRequestsLevelCell, LevelCell) {
     void clearRequestDecorations() {
         if (m_mainMenu) {
             for (auto const* id : {
-                "kolorbok.gd-send-logger/request-info-button",
-                "kolorbok.gd-send-logger/request-video-button",
-                "kolorbok.gd-send-logger/request-youtube-button",
-                "kolorbok.gd-send-logger/request-copy-link-button"
+                "kolorbok.gd-requests/request-info-button",
+                "kolorbok.gd-requests/request-video-button",
+                "kolorbok.gd-requests/request-youtube-button",
+                "kolorbok.gd-requests/request-copy-link-button"
             }) {
                 if (auto* node = m_mainMenu->getChildByID(id)) node->removeFromParentAndCleanup(true);
             }
         }
-        if (auto* node = this->getChildByID("kolorbok.gd-send-logger/request-id-label")) {
+        if (auto* node = this->getChildByID("kolorbok.gd-requests/request-id-label")) {
             node->removeFromParentAndCleanup(true);
         }
         m_fields->request = RequestMeta{};
@@ -4606,7 +4613,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
             "goldFont.fnt"
         );
         if (label) {
-            label->setID("kolorbok.gd-send-logger/request-id-label");
+            label->setID("kolorbok.gd-requests/request-id-label");
             label->setScale(.28f);
             label->setOpacity(205);
             label->setAnchorPoint({1.f, .5f});
@@ -4656,7 +4663,7 @@ class $modify(GDRequestsLevelCell, LevelCell) {
             infoSprite, this, menu_selector(GDRequestsLevelCell::onRequestInfo)
         );
         if (infoButton) {
-            infoButton->setID("kolorbok.gd-send-logger/request-info-button");
+            infoButton->setID("kolorbok.gd-requests/request-info-button");
             infoButton->setSizeMult(1.f);
             infoButton->setPosition({infoX, y});
             m_mainMenu->addChild(infoButton);
@@ -4672,8 +4679,8 @@ class $modify(GDRequestsLevelCell, LevelCell) {
             );
             if (youtubeButton) {
                 youtubeButton->setID(youtube
-                    ? "kolorbok.gd-send-logger/request-youtube-button"
-                    : "kolorbok.gd-send-logger/request-copy-link-button");
+                    ? "kolorbok.gd-requests/request-youtube-button"
+                    : "kolorbok.gd-requests/request-copy-link-button");
                 youtubeButton->setSizeMult(1.f);
                 youtubeButton->setPosition({youtubeX, y});
                 m_mainMenu->addChild(youtubeButton);
@@ -4759,7 +4766,7 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
             auto* fakeSprite = CCSprite::createWithSpriteFrameName("GJ_starBtnMod_001.png");
             fakeSprite->setScale(1.f);
             auto* fakeBtn = CCMenuItemSpriteExtra::create(fakeSprite, this, menu_selector(GDRequestsLevelInfoLayer::onHelperSend));
-            fakeBtn->setID("kolorbok.gd-send-logger/helper-send-button");
+            fakeBtn->setID("kolorbok.gd-requests/helper-send-button");
             menu->addChild(fakeBtn);
         }
 
@@ -4767,7 +4774,7 @@ class $modify(GDRequestsLevelInfoLayer, LevelInfoLayer) {
         auto* rejectSprite = CCSprite::createWithSpriteFrameName("GJ_cancelDownloadBtn_001.png");
         rejectSprite->setScale(1.25f);
         auto* rejectBtn = CCMenuItemSpriteExtra::create(rejectSprite, this, menu_selector(GDRequestsLevelInfoLayer::onRejectRequest));
-        rejectBtn->setID("kolorbok.gd-send-logger/request-reject-button");
+        rejectBtn->setID("kolorbok.gd-requests/request-reject-button");
         menu->addChild(rejectBtn);
         menu->updateLayout();
         return true;
@@ -4876,7 +4883,7 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
             auto* sprite = CCSprite::createWithSpriteFrameName("GJ_editBtn_001.png");
             sprite->setScale(.34f);
             auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(GDRequestsRateStarsLayer::onRequestFeedback));
-            button->setID("kolorbok.gd-send-logger/request-feedback-button");
+            button->setID("kolorbok.gd-requests/request-feedback-button");
             button->setSizeMult(1.f);
 
             auto* noPing = CCMenuItemToggler::createWithStandardSprites(
@@ -4885,7 +4892,7 @@ class $modify(GDRequestsRateStarsLayer, RateStarsLayer) {
                 .48f
             );
             if (noPing) {
-                noPing->setID("kolorbok.gd-send-logger/request-no-ping-toggle");
+                noPing->setID("kolorbok.gd-requests/request-no-ping-toggle");
                 noPing->setSizeMult(1.f);
                 noPing->toggle(noPingFor(captured));
             }
